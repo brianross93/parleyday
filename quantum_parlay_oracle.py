@@ -20,11 +20,14 @@ except ImportError:  # pragma: no cover - optional dependency
 
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
+MLB_STANDINGS_URL = "https://statsapi.mlb.com/api/v1/standings"
+MLB_TEAMS_URL = "https://statsapi.mlb.com/api/v1/teams"
 NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 DEFAULT_BETAS = [0.8, 1.0, 1.2, 1.5, 2.0]
 DATE_CODE_RE = re.compile(r"-(\d{2}[A-Z]{3}\d{2})(\d{4})?([A-Z0-9]+)?$")
 TEAM_WORD_RE = re.compile(r"[^a-z0-9]+")
 EASTERN_TZ = ZoneInfo("America/New_York")
+LEAGUE_AVG_RUNS = 4.5
 
 TEAM_CODES = {
     "Arizona Diamondbacks": ["AZ", "ARI"],
@@ -87,6 +90,39 @@ TEAM_CODES = {
     "Toronto Raptors": ["TOR"],
     "Utah Jazz": ["UTA"],
     "Washington Wizards": ["WAS", "WSH"],
+}
+
+NBA_CODE_TO_NAME = {
+    "ATL": "Atlanta Hawks",
+    "BKN": "Brooklyn Nets",
+    "BOS": "Boston Celtics",
+    "CHA": "Charlotte Hornets",
+    "CHI": "Chicago Bulls",
+    "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks",
+    "DEN": "Denver Nuggets",
+    "DET": "Detroit Pistons",
+    "GSW": "Golden State Warriors",
+    "HOU": "Houston Rockets",
+    "IND": "Indiana Pacers",
+    "LAC": "LA Clippers",
+    "LAL": "Los Angeles Lakers",
+    "MEM": "Memphis Grizzlies",
+    "MIA": "Miami Heat",
+    "MIL": "Milwaukee Bucks",
+    "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans",
+    "NYK": "New York Knicks",
+    "OKC": "Oklahoma City Thunder",
+    "ORL": "Orlando Magic",
+    "PHI": "Philadelphia 76ers",
+    "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers",
+    "SAC": "Sacramento Kings",
+    "SAS": "San Antonio Spurs",
+    "TOR": "Toronto Raptors",
+    "UTA": "Utah Jazz",
+    "WAS": "Washington Wizards",
 }
 
 
@@ -185,6 +221,12 @@ class QuantumEntropySource:
         return values
 
 
+class StaticEntropySource:
+    def __init__(self, source: str):
+        self.source = source
+        self.total_consumed = 0
+
+
 @dataclass(frozen=True)
 class GameInfo:
     sport: str
@@ -232,6 +274,7 @@ class Leg:
     game: str
     implied_prob: float
     notes: str = ""
+    sport: str = "mlb"
 
 
 STATIC_LEGS = [
@@ -314,6 +357,42 @@ def market_midpoint(market: dict) -> float | None:
     if not values:
         return None
     return sum(values) / len(values)
+
+
+def structured_threshold_label(
+    market: dict, metric_code: str, metric_word: str
+) -> str | None:
+    title = market.get("title", "")
+    yes_subtitle = market.get("yes_sub_title") or ""
+    if ":" in title:
+        player = title.split(":", 1)[0].strip()
+    else:
+        player = yes_subtitle.split(":", 1)[0].strip()
+
+    if not player:
+        return None
+
+    threshold = None
+    if ":" in yes_subtitle:
+        rhs = yes_subtitle.split(":", 1)[1].strip()
+        if rhs.endswith("+"):
+            threshold = rhs[:-1].strip()
+
+    if not threshold:
+        floor = market.get("floor_strike")
+        if floor is not None:
+            threshold = str(int(float(floor) + 0.5))
+
+    if not threshold:
+        rules = market.get("rules_primary", "")
+        match = re.search(r"records\s+(\d+)\+\s+" + re.escape(metric_word), rules, re.IGNORECASE)
+        if match:
+            threshold = match.group(1)
+
+    if not threshold:
+        return None
+
+    return f"{player} O {threshold} {metric_code}"
 
 
 def canonical_team_code(team_name: str) -> str:
@@ -400,7 +479,7 @@ def fetch_nba_schedule(date_str: str) -> list[GameInfo]:
     board = payload.get("scoreboard", {})
 
     if board.get("gameDate") != date_str:
-        return []
+        return fetch_nba_schedule_from_kalshi(date_str)
 
     games = []
     for item in board.get("games", []):
@@ -428,6 +507,51 @@ def fetch_nba_schedule(date_str: str) -> list[GameInfo]:
     return games
 
 
+def fetch_nba_schedule_from_kalshi(date_str: str) -> list[GameInfo]:
+    if requests is None:
+        raise RuntimeError("Kalshi NBA schedule loading requires requests")
+
+    target_code = datetime.strptime(date_str, "%Y-%m-%d").strftime("%y%b%d").upper()
+    response = requests.get(
+        f"{KALSHI_API_BASE}/events",
+        params={"limit": 200, "series_ticker": "KXNBAGAME"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    games = []
+
+    for event in payload.get("events", []):
+        ticker = event.get("event_ticker", "")
+        if target_code not in ticker:
+            continue
+        suffix = ticker.split("-")[-1]
+        if len(suffix) < 13:
+            continue
+        matchup = suffix[7:]
+        away_code = matchup[:3]
+        home_code = matchup[3:6]
+        away_name = NBA_CODE_TO_NAME.get(away_code, away_code)
+        home_name = NBA_CODE_TO_NAME.get(home_code, home_code)
+        games.append(
+            GameInfo(
+                sport="nba",
+                game_pk=0,
+                date=date_str,
+                game_time=f"{date_str}T00:00:00Z",
+                game_state="Scheduled",
+                away_name=away_name,
+                home_name=home_name,
+                away_code=away_code,
+                home_code=home_code,
+                away_detail="TBD",
+                home_detail="TBD",
+            )
+        )
+
+    return games
+
+
 def fetch_schedule_for_sport(date_str: str, sport: str) -> list[GameInfo]:
     if sport == "mlb":
         return fetch_mlb_schedule(date_str)
@@ -442,7 +566,7 @@ def fetch_kalshi_sport_markets(
     if requests is None:
         raise RuntimeError("Live Kalshi loading requires requests")
 
-    target_code = target_date.strftime("%d%b%y").upper()
+    target_code = target_date.strftime("%y%b%d").upper()
     ticker_prefix = "KXMLB" if sport == "mlb" else "KXNBA"
     markets = []
     cursor = None
@@ -476,8 +600,11 @@ def fetch_kalshi_sport_markets(
 
 
 def kalshi_game_token(game: GameInfo) -> str:
+    if game.sport == "nba":
+        dt = datetime.strptime(game.date, "%Y-%m-%d")
+        return f"{dt.strftime('%y%b%d').upper()}{game.away_code}{game.home_code}"
     dt = datetime.fromisoformat(game.game_time.replace("Z", "+00:00")).astimezone(EASTERN_TZ)
-    return f"{dt.strftime('%d%b%y').upper()}{dt.strftime('%H%M')}{game.away_code}{game.home_code}"
+    return f"{dt.strftime('%y%b%d').upper()}{dt.strftime('%H%M')}{game.away_code}{game.home_code}"
 
 
 def fetch_kalshi_event(event_ticker: str) -> list[dict]:
@@ -493,19 +620,27 @@ def fetch_kalshi_event(event_ticker: str) -> list[dict]:
 
 
 def fetch_kalshi_markets_for_game(game: GameInfo) -> list[dict]:
-    if game.sport != "mlb":
-        return []
-
     token = kalshi_game_token(game)
-    event_prefixes = [
-        "KXMLBGAME",
-        "KXMLBTOTAL",
-        "KXMLBSPREAD",
-        "KXMLBHR",
-        "KXMLBHIT",
-        "KXMLBTB",
-        "KXMLBHRR",
-    ]
+    if game.sport == "mlb":
+        event_prefixes = [
+            "KXMLBGAME",
+            "KXMLBTOTAL",
+            "KXMLBSPREAD",
+            "KXMLBHR",
+            "KXMLBHIT",
+            "KXMLBTB",
+            "KXMLBHRR",
+        ]
+    elif game.sport == "nba":
+        event_prefixes = [
+            "KXNBAGAME",
+            "KXNBATOTAL",
+            "KXNBAPTS",
+            "KXNBAREB",
+            "KXNBAAST",
+        ]
+    else:
+        return []
 
     markets = []
     seen = set()
@@ -568,6 +703,229 @@ def clean_market_team_label(value: str) -> str:
     return value.strip()
 
 
+def total_line_bounds(sport: str) -> tuple[float, float]:
+    if sport == "mlb":
+        return (5.5, 11.5)
+    if sport == "nba":
+        return (190.5, 260.5)
+    return (0.0, 1e9)
+
+
+def extract_total_line_value(label: str) -> float | None:
+    match = re.search(r"[OU](\d+(?:\.\d+)?)", label)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def total_leg_in_bounds(leg: Leg) -> bool:
+    if leg.category != "total":
+        return True
+    line = extract_total_line_value(leg.label)
+    if line is None:
+        return False
+    lower, upper = total_line_bounds(leg.sport)
+    return lower <= line <= upper
+
+
+def fetch_mlb_team_code_lookup(season: int) -> dict[int, str]:
+    if requests is None:
+        return {}
+    response = requests.get(
+        MLB_TEAMS_URL,
+        params={"sportId": 1, "season": season},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    lookup = {}
+    for team in payload.get("teams", []):
+        team_id = team.get("id")
+        abbreviation = team.get("abbreviation")
+        if team_id and abbreviation:
+            lookup[int(team_id)] = compact_token(str(abbreviation))
+    return lookup
+
+
+def parse_split_record(records: dict, split_type: str) -> tuple[int, int]:
+    for record in records.get("splitRecords", []):
+        if record.get("type") == split_type:
+            return int(record.get("wins", 0)), int(record.get("losses", 0))
+    return 0, 0
+
+
+def fetch_live_mlb_team_form(date_str: str) -> dict[str, dict]:
+    if requests is None:
+        return {}
+    season = int(date_str[:4])
+    code_lookup = fetch_mlb_team_code_lookup(season)
+    response = requests.get(
+        MLB_STANDINGS_URL,
+        params={"leagueId": "103,104", "season": season, "standingsTypes": "regularSeason"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    team_form = {}
+    for record_group in payload.get("records", []):
+        for record in record_group.get("teamRecords", []):
+            team_id = record.get("team", {}).get("id")
+            code = code_lookup.get(int(team_id)) if team_id is not None else None
+            if not code:
+                continue
+            games_played = max(int(record.get("gamesPlayed", 0)), 1)
+            runs_scored = float(record.get("runsScored", 0.0))
+            runs_allowed = float(record.get("runsAllowed", 0.0))
+            run_diff = float(record.get("runDifferential", 0.0))
+            home_wins, home_losses = parse_split_record(record.get("records", {}), "home")
+            away_wins, away_losses = parse_split_record(record.get("records", {}), "away")
+            last_ten_wins, last_ten_losses = parse_split_record(record.get("records", {}), "lastTen")
+            last_ten_games = max(last_ten_wins + last_ten_losses, 1)
+            team_form[code] = {
+                "win_pct": float(record.get("winningPercentage", 0.5) or 0.5),
+                "run_diff_pg": run_diff / games_played,
+                "runs_scored_pg": runs_scored / games_played,
+                "runs_allowed_pg": runs_allowed / games_played,
+                "recent_win_pct": last_ten_wins / last_ten_games,
+                "home_win_pct": home_wins / max(home_wins + home_losses, 1),
+                "away_win_pct": away_wins / max(away_wins + away_losses, 1),
+            }
+    return team_form
+
+
+def direct_total_line(leg: Leg) -> float | None:
+    return extract_total_line_value(leg.label)
+
+
+def live_mlb_residual_adjustment(leg: Leg, team_form: dict[str, dict]) -> float:
+    if leg.sport != "mlb":
+        return 0.0
+    away_code, home_code = leg.game.split("@")
+    away = team_form.get(away_code)
+    home = team_form.get(home_code)
+    if away is None or home is None:
+        return 0.0
+
+    if leg.category == "ml":
+        selected = leg.label.split()[0]
+        selected_state = away if selected == away_code else home
+        opponent_state = home if selected == away_code else away
+        venue_edge = (
+            float(selected_state["home_win_pct"]) - float(opponent_state["away_win_pct"])
+            if selected == home_code
+            else float(selected_state["away_win_pct"]) - float(opponent_state["home_win_pct"])
+        )
+        adjustment = (
+            0.05 * np.tanh((float(selected_state["win_pct"]) - float(opponent_state["win_pct"])) / 0.10)
+            + 0.04 * np.tanh((float(selected_state["run_diff_pg"]) - float(opponent_state["run_diff_pg"])) / 1.5)
+            + 0.025 * np.tanh((float(selected_state["recent_win_pct"]) - float(opponent_state["recent_win_pct"])) / 0.12)
+            + 0.015 * np.tanh(venue_edge / 0.12)
+        )
+        return float(adjustment)
+
+    if leg.category == "total":
+        line = direct_total_line(leg)
+        if line is None:
+            return 0.0
+        projected_total = (
+            float(away["runs_scored_pg"])
+            + float(home["runs_scored_pg"])
+            + float(away["runs_allowed_pg"])
+            + float(home["runs_allowed_pg"])
+        ) / 2.0
+        recent_total = (
+            float(away["runs_scored_pg"])
+            + float(away["runs_allowed_pg"])
+            + float(home["runs_scored_pg"])
+            + float(home["runs_allowed_pg"])
+        ) / 2.0
+        total_edge = projected_total - line
+        environment_edge = recent_total - (LEAGUE_AVG_RUNS * 2.0)
+        adjustment = (
+            0.05 * np.tanh(total_edge / 1.25)
+            + 0.02 * np.tanh(environment_edge / 2.0)
+        )
+        if is_under_leg(leg):
+            adjustment *= -1.0
+        return float(adjustment)
+
+    return 0.0
+
+
+def is_pregame_game(game: GameInfo) -> bool:
+    state = (game.game_state or "").strip().lower()
+    if not state:
+        return True
+
+    blocked_terms = {
+        "final",
+        "final/so",
+        "completed",
+        "game over",
+        "postponed",
+        "cancelled",
+        "canceled",
+        "suspended",
+        "in progress",
+        "mid 1st",
+        "mid 2nd",
+        "mid 3rd",
+        "mid 4th",
+        "mid 5th",
+        "mid 6th",
+        "mid 7th",
+        "mid 8th",
+        "mid 9th",
+        "top 1st",
+        "top 2nd",
+        "top 3rd",
+        "top 4th",
+        "top 5th",
+        "top 6th",
+        "top 7th",
+        "top 8th",
+        "top 9th",
+        "bot 1st",
+        "bot 2nd",
+        "bot 3rd",
+        "bot 4th",
+        "bot 5th",
+        "bot 6th",
+        "bot 7th",
+        "bot 8th",
+        "bot 9th",
+        "halftime",
+    }
+    if state in blocked_terms:
+        return False
+
+    live_fragments = (
+        "quarter",
+        "1st",
+        "2nd",
+        "3rd",
+        "4th",
+        "inning",
+        "live",
+        "delayed",
+        "rain delay",
+    )
+    return not any(fragment in state for fragment in live_fragments)
+
+
+def market_is_actionable(market: dict) -> bool:
+    status = str(market.get("status", "")).strip().lower()
+    if status in {"finalized", "settled", "closed", "expired"}:
+        return False
+    result = str(market.get("result", "")).strip().lower()
+    if result in {"yes", "no"}:
+        return False
+    return True
+
+
 def classify_market(market: dict, game: GameInfo) -> Leg | None:
     implied_prob = parse_market_price(market)
     if implied_prob is None:
@@ -581,46 +939,58 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
 
     if "winner?" in title_lower or event_ticker.endswith("GAME") or "game winner" in title_lower:
         team = clean_market_team_label(yes_subtitle or title.replace(" Winner?", ""))
-        return Leg(-1, f"{team} ML", "ml", game.matchup, implied_prob, note)
+        return Leg(-1, f"{team} ML", "ml", game.matchup, implied_prob, note, game.sport)
 
     if game.sport == "mlb":
         if event_ticker.startswith("KXMLBHR-") or "home runs?" in title_lower:
             if market.get("floor_strike") not in (None, 0.5):
                 return None
-            player = title.split(":")[0].strip()
-            return Leg(-1, f"{player} HR", "prop", game.matchup, implied_prob, note)
+            label = structured_threshold_label(market, "HR", "home runs")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+            player = title.split(":", 1)[0].strip()
+            return Leg(-1, f"{player} O 1 HR", "prop", game.matchup, implied_prob, note, game.sport)
 
         if "strikeout" in title_lower or "strikeouts" in title_lower or event_ticker.startswith("KXMLBSO"):
             player = title.split(":")[0].strip()
-            return Leg(-1, f"{player} O K's", "prop", game.matchup, implied_prob, note)
+            return Leg(-1, f"{player} O K's", "prop", game.matchup, implied_prob, note, game.sport)
 
         if event_ticker.startswith("KXMLBTOTAL") or "total runs?" in title_lower:
             strike = market.get("floor_strike")
             if strike is None:
                 raw = yes_subtitle or title
                 cleaned = raw.replace("Over", "O").replace("over", "O").strip()
-                return Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note)
-            return Leg(-1, f"{game.matchup} O{strike + 0.0:g}", "total", game.matchup, implied_prob, note)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                return leg if total_leg_in_bounds(leg) else None
+            leg = Leg(-1, f"{game.matchup} O{strike + 0.0:g}", "total", game.matchup, implied_prob, note, game.sport)
+            return leg if total_leg_in_bounds(leg) else None
 
         if event_ticker.startswith("KXMLBSPREAD") or "wins by over" in title_lower:
             return None
 
     if game.sport == "nba":
-        player = title.split(":")[0].strip()
         if event_ticker.startswith("KXNBAPTS") or " points?" in title_lower:
-            return Leg(-1, f"{player} O PTS", "prop", game.matchup, implied_prob, note)
+            label = structured_threshold_label(market, "PTS", "Points")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
         if event_ticker.startswith("KXNBAREB") or " rebounds?" in title_lower:
-            return Leg(-1, f"{player} O REB", "prop", game.matchup, implied_prob, note)
+            label = structured_threshold_label(market, "REB", "Rebounds")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
         if event_ticker.startswith("KXNBAAST") or " assists?" in title_lower:
-            return Leg(-1, f"{player} O AST", "prop", game.matchup, implied_prob, note)
-        if "total points?" in title_lower or event_ticker.startswith("KXNBAOU"):
+            label = structured_threshold_label(market, "AST", "Assists")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+        if "total points?" in title_lower or event_ticker.startswith("KXNBATOTAL") or event_ticker.startswith("KXNBAOU"):
             raw = yes_subtitle or title
             if "over" in raw.lower():
                 cleaned = raw.replace("Over", "O").replace("over", "O").strip()
-                return Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                return leg if total_leg_in_bounds(leg) else None
             if "under" in raw.lower():
                 cleaned = raw.replace("Under", "U").replace("under", "U").strip()
-                return Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                return leg if total_leg_in_bounds(leg) else None
 
     return None
 
@@ -629,6 +999,8 @@ def dedupe_legs(legs: list[Leg]) -> list[Leg]:
     deduped = {}
     for leg in legs:
         if leg.category == "total":
+            if not total_leg_in_bounds(leg):
+                continue
             key = (leg.game, leg.category)
         elif leg.category == "spread":
             key = (leg.game, leg.label)
@@ -656,12 +1028,6 @@ def dedupe_legs(legs: list[Leg]) -> list[Leg]:
     return [replace(leg, id=index) for index, leg in enumerate(ordered)]
 
 
-def fallback_static_legs(sports: list[str]) -> list[Leg]:
-    if sports == ["mlb"]:
-        return [replace(leg, id=index) for index, leg in enumerate(STATIC_LEGS)]
-    return []
-
-
 def load_live_legs(date_str: str, sports: list[str], kalshi_pages: int) -> tuple[list[Leg], dict]:
     target_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     all_games = []
@@ -669,14 +1035,20 @@ def load_live_legs(date_str: str, sports: list[str], kalshi_pages: int) -> tuple
     legs = []
 
     for sport in sports:
-        games = fetch_schedule_for_sport(date_str, sport)
+        games = [game for game in fetch_schedule_for_sport(date_str, sport) if is_pregame_game(game)]
         token_lookup, game_list = build_game_lookup(games)
-        if sport == "mlb":
+        if sport in {"mlb", "nba"}:
             markets = []
             for game in games:
-                markets.extend(fetch_kalshi_markets_for_game(game))
+                markets.extend(
+                    market for market in fetch_kalshi_markets_for_game(game) if market_is_actionable(market)
+                )
         else:
-            markets = fetch_kalshi_sport_markets(target_date, sport=sport, max_pages=kalshi_pages)
+            markets = [
+                market
+                for market in fetch_kalshi_sport_markets(target_date, sport=sport, max_pages=kalshi_pages)
+                if market_is_actionable(market)
+            ]
         all_games.extend(games)
         all_markets.extend(markets)
 
@@ -700,27 +1072,16 @@ def load_live_legs(date_str: str, sports: list[str], kalshi_pages: int) -> tuple
 
 
 def load_legs(date_str: str, mode: str, sports: list[str], kalshi_pages: int) -> tuple[list[Leg], str, dict]:
-    if mode == "static":
-        legs = fallback_static_legs(sports)
-        if not legs:
-            raise RuntimeError("No static fallback slate is defined for the requested sport selection")
-        return legs, "static", {"date": date_str, "sports": ",".join(sports), "games": 0, "kalshi_markets": 0, "recognized_legs": len(legs)}
-
     try:
         live_legs, meta = load_live_legs(date_str, sports=sports, kalshi_pages=kalshi_pages)
         if live_legs:
             return live_legs, "live", meta
-        if mode == "live":
-            raise RuntimeError("No recognizable Kalshi sports legs found for the target date")
+        raise RuntimeError("No recognizable Kalshi sports legs found for the target date")
     except Exception as exc:
-        if mode == "live":
-            raise
-        print(f"  Live loader unavailable: {exc}")
-
-    legs = fallback_static_legs(sports)
-    if not legs:
-        raise RuntimeError("Live loader unavailable and no static fallback slate exists for the requested sport selection")
-    return legs, "static-fallback", {"date": date_str, "sports": ",".join(sports), "games": 0, "kalshi_markets": 0, "recognized_legs": len(legs)}
+        raise RuntimeError(
+            f"Live loader unavailable for {date_str}: {exc}. "
+            "No fallback slate is used."
+        )
 
 
 def is_over_leg(leg: Leg) -> bool:
@@ -736,7 +1097,7 @@ def is_k_prop(leg: Leg) -> bool:
 
 
 def is_hr_prop(leg: Leg) -> bool:
-    return leg.category == "prop" and "HR" in leg.label
+    return leg.category == "prop" and leg.label.endswith("HR")
 
 
 def compute_biases(legs: list[Leg]) -> np.ndarray:
@@ -860,42 +1221,730 @@ def incompatible_pair(a: Leg, b: Leg) -> bool:
     return False
 
 
+def standalone_leg_score(leg: Leg, activation_value: float) -> float:
+    edge = activation_value - leg.implied_prob
+    score = (activation_value * 0.9) + (edge * 1.8)
+    if is_hr_prop(leg):
+        score -= 0.08
+    return score
+
+
+def candidate_leg_score(
+    candidate_idx: int,
+    parlay: list[int],
+    legs: list[Leg],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+    available_sports: set[str],
+) -> float:
+    candidate = legs[candidate_idx]
+    activation_value = float(activation[candidate_idx])
+    edge = activation_value - candidate.implied_prob
+    score = (activation_value * 0.9) + (edge * 1.8)
+
+    if parlay:
+        pair_fit = []
+        for pick in parlay:
+            pair_fit.append(
+                float(co_activation[candidate_idx, pick] - (activation[candidate_idx] * activation[pick]))
+            )
+        score += (sum(pair_fit) / len(pair_fit)) * 1.5
+
+    same_game_count = sum(1 for pick in parlay if legs[pick].game == candidate.game)
+    if same_game_count:
+        score -= 0.22 * same_game_count
+
+    same_category_count = sum(1 for pick in parlay if legs[pick].category == candidate.category)
+    if candidate.category == "ml":
+        score -= 0.18 * same_category_count
+    elif candidate.category == "total":
+        score -= 0.12 * same_category_count
+    elif candidate.category == "prop" and is_hr_prop(candidate):
+        score -= 0.08 * same_category_count
+
+    if len(available_sports) > 1:
+        sport_counts = {}
+        for pick in parlay:
+            sport_counts[legs[pick].sport] = sport_counts.get(legs[pick].sport, 0) + 1
+        candidate_count = sport_counts.get(candidate.sport, 0)
+        other_count = sum(sport_counts.values()) - candidate_count
+        if candidate_count < other_count:
+            score += 0.26
+        elif candidate_count > other_count:
+            score -= 0.16
+
+    return score
+
+
+def leg_allowed_for_parlay_size(
+    leg: Leg,
+    activation_value: float,
+    requested_size: int,
+) -> bool:
+    if requested_size == 3 and activation_value < 0.54:
+        return False
+    if requested_size == 4 and activation_value < 0.52:
+        return False
+    if requested_size <= 4:
+        if is_hr_prop(leg):
+            return activation_value >= 0.62
+        if leg.category == "prop":
+            return activation_value >= 0.54
+    if requested_size == 3 and leg.category == "prop" and activation_value < 0.58:
+        return False
+    return True
+
+
+def candidate_pool_limit(size: int) -> int:
+    if size <= 3:
+        return 18
+    if size == 4:
+        return 22
+    return 26
+
+
+def beam_width_for_size(size: int) -> int:
+    if size <= 3:
+        return 32
+    if size == 4:
+        return 40
+    return 56
+
+
+def state_score_profile(target_size: int) -> dict[str, float]:
+    return {
+        "activation": 1.15,
+        "edge": 2.6,
+        "pair_fit": 2.2,
+        "same_game": 0.24,
+        "future": 0.35,
+        "single_sport": 0.22,
+        "sport_gap": 0.06,
+        "ml_penalty": 0.28,
+        "total_penalty": 0.10,
+        "prop_penalty": 0.12,
+        "hr_short": 0.18,
+        "hr_long": 0.12,
+    }
+
+
+def partial_state_score(
+    parlay: list[int],
+    legs: list[Leg],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+    available_sports: set[str],
+    target_size: int,
+) -> float:
+    if not parlay:
+        return -np.inf
+
+    profile = state_score_profile(target_size)
+    parlay_set = set(parlay)
+    activations = [float(activation[idx]) for idx in parlay]
+    edges = [float(activation[idx] - legs[idx].implied_prob) for idx in parlay]
+
+    pair_terms = []
+    same_game_penalty = 0.0
+    for i, first in enumerate(parlay):
+        for second in parlay[i + 1 :]:
+            fit = float(co_activation[first, second] - (activation[first] * activation[second]))
+            pair_terms.append(fit)
+            if legs[first].game == legs[second].game:
+                same_game_penalty += profile["same_game"]
+
+    mean_activation = sum(activations) / len(activations)
+    mean_edge = sum(edges) / len(edges)
+    mean_pair_fit = (sum(pair_terms) / len(pair_terms)) if pair_terms else 0.0
+
+    score = (
+        (mean_activation * profile["activation"])
+        + (mean_edge * profile["edge"])
+        + (mean_pair_fit * profile["pair_fit"])
+    )
+
+    category_counts = {}
+    sport_counts = {}
+    for idx in parlay:
+        category = legs[idx].category
+        category_counts[category] = category_counts.get(category, 0) + 1
+        sport = legs[idx].sport
+        sport_counts[sport] = sport_counts.get(sport, 0) + 1
+
+    for category, count in category_counts.items():
+        if category == "ml":
+            score -= max(0, count - 2) * profile["ml_penalty"]
+        elif category == "total":
+            score -= max(0, count - 3) * profile["total_penalty"]
+        elif category == "prop":
+            score -= max(0, count - 2) * profile["prop_penalty"]
+
+    hr_count = sum(1 for idx in parlay if is_hr_prop(legs[idx]))
+    if target_size <= 4:
+        score -= hr_count * profile["hr_short"]
+    else:
+        score -= max(0, hr_count - 1) * profile["hr_long"]
+
+    if len(available_sports) > 1 and len(parlay) >= 2:
+        if len(sport_counts) == 1:
+            score -= profile["single_sport"] * min(len(parlay), target_size - 1)
+        else:
+            balance_gap = max(sport_counts.values()) - min(sport_counts.values())
+            score -= profile["sport_gap"] * balance_gap
+
+    score -= same_game_penalty
+
+    if len(parlay) < target_size:
+        candidate_indices = [
+            idx
+            for idx in range(len(legs))
+            if idx not in parlay_set
+            and leg_allowed_for_parlay_size(legs[idx], float(activation[idx]), target_size)
+            and not any(incompatible_pair(legs[idx], legs[pick]) for pick in parlay)
+        ]
+        if not candidate_indices:
+            score -= 1.25
+        else:
+            frontier = sorted(
+                candidate_indices,
+                key=lambda idx: candidate_leg_score(
+                    candidate_idx=idx,
+                    parlay=parlay,
+                    legs=legs,
+                    activation=activation,
+                    co_activation=co_activation,
+                    available_sports=available_sports,
+                ),
+                reverse=True,
+            )[: max(1, target_size - len(parlay))]
+            future_bonus = sum(
+                standalone_leg_score(legs[idx], float(activation[idx])) for idx in frontier
+            ) / len(frontier)
+            score += future_bonus * profile["future"]
+
+    return score
+
+
+def build_state_parlay(
+    legs: list[Leg], activation: np.ndarray, co_activation: np.ndarray, size: int
+) -> list[int]:
+    target_size = min(size, len(legs))
+    if target_size <= 0:
+        return []
+
+    ranked = sorted(
+        range(len(legs)),
+        key=lambda idx: standalone_leg_score(legs[idx], float(activation[idx])),
+        reverse=True,
+    )
+    ranked = [
+        idx for idx in ranked if leg_allowed_for_parlay_size(legs[idx], float(activation[idx]), size)
+    ]
+    if not ranked:
+        return []
+
+    candidate_pool = ranked[: candidate_pool_limit(size)]
+    available_sports = {leg.sport for leg in legs}
+
+    starters = [idx for idx in candidate_pool if not is_hr_prop(legs[idx])]
+    seed_pool = starters[:beam_width_for_size(size)] if starters else candidate_pool[:beam_width_for_size(size)]
+    beam = [[idx] for idx in seed_pool]
+    best_complete = []
+    best_complete_score = -np.inf
+
+    for depth in range(1, target_size + 1):
+        scored_states = []
+        for parlay in beam:
+            score = partial_state_score(
+                parlay=parlay,
+                legs=legs,
+                activation=activation,
+                co_activation=co_activation,
+                available_sports=available_sports,
+                target_size=target_size,
+            )
+            scored_states.append((score, parlay))
+            if len(parlay) == target_size and score > best_complete_score:
+                best_complete_score = score
+                best_complete = parlay
+
+        if depth == target_size:
+            break
+
+        next_states = []
+        seen = set()
+        for _, parlay in sorted(scored_states, key=lambda item: item[0], reverse=True)[: beam_width_for_size(size)]:
+            for candidate in candidate_pool:
+                if candidate in parlay:
+                    continue
+                if any(incompatible_pair(legs[candidate], legs[pick]) for pick in parlay):
+                    continue
+                new_state = tuple(sorted(parlay + [candidate]))
+                if new_state in seen:
+                    continue
+                seen.add(new_state)
+                next_states.append(list(new_state))
+
+        if not next_states:
+            break
+
+        next_scored = [
+            (
+                partial_state_score(
+                    parlay=state,
+                    legs=legs,
+                    activation=activation,
+                    co_activation=co_activation,
+                    available_sports=available_sports,
+                    target_size=target_size,
+                ),
+                state,
+            )
+            for state in next_states
+        ]
+        next_scored.sort(key=lambda item: item[0], reverse=True)
+        beam = [state for _, state in next_scored[: beam_width_for_size(size)]]
+
+    if best_complete:
+        return best_complete
+
+    best_partial = max(
+        beam,
+        key=lambda state: partial_state_score(
+            parlay=state,
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            available_sports=available_sports,
+            target_size=target_size,
+        ),
+        default=[],
+    )
+    return best_partial
+
+
 def build_greedy_parlay(
     legs: list[Leg], activation: np.ndarray, co_activation: np.ndarray, size: int
 ) -> list[int]:
-    ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
-    starters = [idx for idx in ranked if not is_hr_prop(legs[idx])]
-    if starters:
-        parlay = [starters[0]]
-    elif ranked:
-        parlay = [ranked[0]]
-    else:
+    return build_state_parlay(legs, activation, co_activation, size)
+
+
+TIER_DEFINITIONS = [
+    {
+        "key": "cash",
+        "label": "Cash",
+        "size": 3,
+        "min_prob": 0.70,
+        "max_prob": 0.98,
+        "target_payout_min": 1.5,
+        "target_payout_max": 3.0,
+        "bankroll_hint": "50%",
+        "description": "High-probability grinder built to cash regularly.",
+    },
+    {
+        "key": "decent",
+        "label": "Decent Bet",
+        "size": 4,
+        "min_prob": 0.50,
+        "max_prob": 0.70,
+        "target_payout_min": 5.0,
+        "target_payout_max": 15.0,
+        "bankroll_hint": "30%",
+        "description": "Mid-range state-search ticket where combination fit matters most.",
+    },
+    {
+        "key": "longshot",
+        "label": "Longshot",
+        "size": 5,
+        "min_prob": 0.30,
+        "max_prob": 0.50,
+        "target_payout_min": 25.0,
+        "target_payout_max": 100.0,
+        "bankroll_hint": "20%",
+        "description": "Asymmetric upside ticket built from lower-probability legs.",
+    },
+]
+
+
+def direct_leg_tag(leg: Leg) -> str:
+    if leg.category == "ml":
+        side = leg.label.split()[0]
+        away_code, home_code = leg.game.split("@")
+        is_home = side == home_code
+        role = "fav" if leg.implied_prob >= 0.5 else "dog"
+        location = "home" if is_home else "away"
+        return f"ml:{location}:{role}"
+    if leg.category == "total":
+        return "total:over" if is_over_leg(leg) else "total:under"
+    return f"prop:{leg.category}"
+
+
+def direct_pair_bonus(first: Leg, second: Leg, mode: str) -> float:
+    if first.game == second.game and first.category == second.category:
+        return -0.95
+
+    bonus = 0.0
+    first_tag = direct_leg_tag(first)
+    second_tag = direct_leg_tag(second)
+    tags = {first_tag, second_tag}
+
+    if mode == "heuristic":
+        if first.category == "total" and second.category == "total":
+            if tags == {"total:under"}:
+                bonus += 0.04
+            elif tags == {"total:over"}:
+                bonus += 0.015
+            else:
+                bonus -= 0.04
+        if first.category == "ml" and second.category == "ml":
+            if "ml:away:dog" in tags and len(tags) == 1:
+                bonus += 0.01
+            if "ml:home:fav" in tags and len(tags) == 1:
+                bonus += 0.01
+        if tags == {"ml:home:fav", "total:under"}:
+            bonus += 0.02
+        if tags == {"ml:away:dog", "total:over"}:
+            bonus += 0.01
+
+    return bonus
+
+
+def direct_activation_and_coactivation(
+    legs: list[Leg],
+    score_source: str,
+    date_str: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    implied = np.array([float(leg.implied_prob) for leg in legs], dtype=np.float64)
+    activation = implied.copy()
+
+    if score_source == "heuristic":
+        bias_bonus = -compute_biases(legs) * 0.12
+        activation = activation + bias_bonus
+        for idx, leg in enumerate(legs):
+            if is_under_leg(leg):
+                activation[idx] += 0.01
+            elif is_over_leg(leg):
+                activation[idx] += 0.003
+            elif leg.category == "ml" and leg.implied_prob < 0.5:
+                activation[idx] += 0.005
+    elif score_source == "residual":
+        team_form = fetch_live_mlb_team_form(date_str) if date_str else {}
+        for idx, leg in enumerate(legs):
+            activation[idx] += live_mlb_residual_adjustment(leg, team_form)
+
+    activation = np.clip(activation, 0.02, 0.98)
+    co_activation = np.outer(activation, activation)
+
+    for i, first in enumerate(legs):
+        for j in range(i + 1, len(legs)):
+            second = legs[j]
+            bonus = direct_pair_bonus(first, second, score_source)
+            if bonus:
+                adjusted = float(np.clip(co_activation[i, j] + bonus, 0.0, 1.0))
+                co_activation[i, j] = adjusted
+                co_activation[j, i] = adjusted
+
+    np.fill_diagonal(co_activation, activation)
+    return activation, co_activation
+
+
+def build_filtered_parlay(
+    legs: list[Leg],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+    size: int,
+    min_prob: float,
+    max_prob: float,
+) -> list[int]:
+    eligible = [
+        idx
+        for idx, leg in enumerate(legs)
+        if min_prob <= float(leg.implied_prob) <= max_prob
+    ]
+    if len(eligible) < size:
+        ranked = sorted(
+            range(len(legs)),
+            key=lambda idx: abs(float(legs[idx].implied_prob) - ((min_prob + max_prob) / 2.0)),
+        )
+        for idx in ranked:
+            if idx not in eligible:
+                eligible.append(idx)
+            if len(eligible) >= size:
+                break
+
+    if not eligible:
         return []
 
-    target_size = min(size, len(legs))
+    sub_legs = [replace(legs[idx], id=sub_idx) for sub_idx, idx in enumerate(eligible)]
+    sub_activation = activation[eligible]
+    sub_co = co_activation[np.ix_(eligible, eligible)]
+    sub_parlay = build_greedy_parlay(sub_legs, sub_activation, sub_co, size)
+    return [eligible[idx] for idx in sub_parlay]
 
-    while len(parlay) < target_size:
-        best_idx = None
-        best_score = -np.inf
 
-        for candidate in ranked:
-            if candidate in parlay:
-                continue
-            if any(incompatible_pair(legs[candidate], legs[pick]) for pick in parlay):
-                continue
+def build_tiered_parlays(
+    legs: list[Leg],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+    cash_activation: np.ndarray | None = None,
+    cash_co_activation: np.ndarray | None = None,
+) -> list[dict]:
+    tiers = []
+    for tier in TIER_DEFINITIONS:
+        tier_activation = activation
+        tier_co_activation = co_activation
+        tier_score_mode = "implied"
+        residual_requested = tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None
+        if tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None:
+            tier_activation = cash_activation
+            tier_co_activation = cash_co_activation
+            tier_score_mode = "residual"
+        parlay = build_filtered_parlay(
+            legs=legs,
+            activation=tier_activation,
+            co_activation=tier_co_activation,
+            size=tier["size"],
+            min_prob=tier["min_prob"],
+            max_prob=tier["max_prob"],
+        )
+        if (
+            tier["key"] == "cash"
+            and len(parlay) < tier["size"]
+            and cash_activation is not None
+            and cash_co_activation is not None
+        ):
+            tier_activation = activation
+            tier_co_activation = co_activation
+            tier_score_mode = "implied_fallback"
+            parlay = build_filtered_parlay(
+                legs=legs,
+                activation=tier_activation,
+                co_activation=tier_co_activation,
+                size=tier["size"],
+                min_prob=tier["min_prob"],
+                max_prob=tier["max_prob"],
+            )
+        combo_prob = float(np.prod([tier_activation[idx] for idx in parlay])) if parlay else 0.0
+        tiers.append(
+            {
+                **tier,
+                "actual_size": len(parlay),
+                "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
+                "score_mode": tier_score_mode,
+                "residual_requested": residual_requested,
+                "legs": [
+                    {
+                        "label": legs[idx].label,
+                        "category": legs[idx].category,
+                        "game": legs[idx].game,
+                        "activation": float(tier_activation[idx]),
+                        "implied_prob": float(legs[idx].implied_prob),
+                        "score_delta": float(tier_activation[idx]) - float(legs[idx].implied_prob),
+                        "notes": legs[idx].notes,
+                    }
+                    for idx in parlay
+                ],
+            }
+        )
+    return tiers
 
-            score = float(sum(co_activation[candidate, pick] for pick in parlay))
-            score += activation[candidate] * 0.5
 
-            if score > best_score:
-                best_score = score
-                best_idx = candidate
+def summarize_from_scores(
+    legs: list[Leg],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+    entropy_source,
+    slate_mode: str,
+    loader_meta: dict,
+    cash_activation: np.ndarray | None = None,
+    cash_co_activation: np.ndarray | None = None,
+) -> dict:
+    n_samples = int(loader_meta.get("games", 0))
+    ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
 
-        if best_idx is None:
-            break
-        parlay.append(best_idx)
+    top_legs = []
+    for rank, idx in enumerate(ranked[:12], start=1):
+        leg = legs[idx]
+        top_legs.append(
+            {
+                "rank": rank,
+                "label": leg.label,
+                "category": leg.category,
+                "game": leg.game,
+                "activation": float(activation[idx]),
+                "notes": leg.notes,
+            }
+        )
 
-    return parlay
+    parlays = []
+    for requested_size in (3, 4, 5):
+        parlay = build_greedy_parlay(legs, activation, co_activation, requested_size)
+        if not parlay:
+            parlays.append(
+                {"requested_size": requested_size, "actual_size": 0, "payout_estimate": None, "legs": []}
+            )
+            continue
+        combo_prob = float(np.prod([activation[idx] for idx in parlay]))
+        parlays.append(
+            {
+                "requested_size": requested_size,
+                "actual_size": len(parlay),
+                "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
+                "legs": [
+                    {
+                        "label": legs[idx].label,
+                        "category": legs[idx].category,
+                        "game": legs[idx].game,
+                        "activation": float(activation[idx]),
+                        "notes": legs[idx].notes,
+                    }
+                    for idx in parlay
+                ],
+            }
+        )
+
+    tier_parlays = build_tiered_parlays(
+        legs,
+        activation,
+        co_activation,
+        cash_activation=cash_activation,
+        cash_co_activation=cash_co_activation,
+    )
+
+    hr_candidates = [idx for idx in ranked if is_hr_prop(legs[idx])]
+    moonshot = None
+    if hr_candidates:
+        best_idx = hr_candidates[0]
+        moonshot = {
+            "label": legs[best_idx].label,
+            "category": legs[best_idx].category,
+            "game": legs[best_idx].game,
+            "activation": float(activation[best_idx]),
+            "notes": legs[best_idx].notes,
+        }
+
+    fades = []
+    for idx in ranked[-6:]:
+        fades.append(
+            {
+                "label": legs[idx].label,
+                "category": legs[idx].category,
+                "game": legs[idx].game,
+                "activation": float(activation[idx]),
+                "notes": legs[idx].notes,
+            }
+        )
+
+    return {
+        "meta": {
+            "entropy_source": entropy_source.source,
+            "random_bytes_consumed": entropy_source.total_consumed,
+            "samples_collected": n_samples,
+            "slate_mode": slate_mode,
+            **loader_meta,
+        },
+        "top_legs": top_legs,
+        "parlays": parlays,
+        "tier_parlays": tier_parlays,
+        "moonshot": moonshot,
+        "fades": fades,
+    }
+
+
+def summarize_results(
+    legs: list[Leg],
+    samples: np.ndarray,
+    qrng: QuantumEntropySource,
+    slate_mode: str,
+    loader_meta: dict,
+) -> dict:
+    n_samples = samples.shape[0]
+    binary = (samples + 1.0) / 2.0
+    activation = np.mean(binary, axis=0)
+    co_activation = (binary.T @ binary) / n_samples
+    ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
+
+    top_legs = []
+    for rank, idx in enumerate(ranked[:12], start=1):
+        leg = legs[idx]
+        top_legs.append(
+            {
+                "rank": rank,
+                "label": leg.label,
+                "category": leg.category,
+                "game": leg.game,
+                "activation": float(activation[idx]),
+                "notes": leg.notes,
+            }
+        )
+
+    parlays = []
+    for requested_size in (3, 4, 5):
+        parlay = build_greedy_parlay(legs, activation, co_activation, requested_size)
+        if not parlay:
+            parlays.append(
+                {"requested_size": requested_size, "actual_size": 0, "payout_estimate": None, "legs": []}
+            )
+            continue
+        combo_prob = float(np.prod([activation[idx] for idx in parlay]))
+        parlays.append(
+            {
+                "requested_size": requested_size,
+                "actual_size": len(parlay),
+                "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
+                "legs": [
+                    {
+                        "label": legs[idx].label,
+                        "category": legs[idx].category,
+                        "game": legs[idx].game,
+                        "activation": float(activation[idx]),
+                        "notes": legs[idx].notes,
+                    }
+                    for idx in parlay
+                ],
+            }
+        )
+
+    tier_parlays = build_tiered_parlays(legs, activation, co_activation)
+
+    hr_candidates = [idx for idx in ranked if is_hr_prop(legs[idx])]
+    moonshot = None
+    if hr_candidates:
+        best_idx = hr_candidates[0]
+        moonshot = {
+            "label": legs[best_idx].label,
+            "category": legs[best_idx].category,
+            "game": legs[best_idx].game,
+            "activation": float(activation[best_idx]),
+            "notes": legs[best_idx].notes,
+        }
+
+    fades = []
+    for idx in ranked[-6:]:
+        fades.append(
+            {
+                "label": legs[idx].label,
+                "category": legs[idx].category,
+                "game": legs[idx].game,
+                "activation": float(activation[idx]),
+                "notes": legs[idx].notes,
+            }
+        )
+
+    return {
+        "meta": {
+            "entropy_source": qrng.source,
+            "random_bytes_consumed": qrng.total_consumed,
+            "samples_collected": n_samples,
+            "slate_mode": slate_mode,
+            **loader_meta,
+        },
+        "top_legs": top_legs,
+        "parlays": parlays,
+        "tier_parlays": tier_parlays,
+        "moonshot": moonshot,
+        "fades": fades,
+    }
 
 
 def analyze(
@@ -905,67 +1954,141 @@ def analyze(
     slate_mode: str,
     loader_meta: dict,
 ) -> None:
-    n_samples = samples.shape[0]
-    binary = (samples + 1.0) / 2.0
-    activation = np.mean(binary, axis=0)
-    co_activation = (binary.T @ binary) / n_samples
-    ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
+    summary = summarize_results(legs, samples, qrng, slate_mode, loader_meta)
+    meta = summary["meta"]
 
     print()
     print("=" * 68)
     print("QUANTUM PARLAY ORACLE RESULTS")
     print("=" * 68)
-    print(f"Entropy source: {qrng.source}")
-    print(f"Slate mode: {slate_mode}")
-    print(f"Target date: {loader_meta.get('date')}")
-    print(f"Sports: {loader_meta.get('sports', 'mlb')}")
-    print(f"Games loaded: {loader_meta.get('games')}")
-    print(f"Kalshi markets scanned: {loader_meta.get('kalshi_markets')}")
-    print(f"Recognized legs: {loader_meta.get('recognized_legs')}")
-    print(f"Random bytes consumed: {qrng.total_consumed:,}")
-    print(f"Samples collected: {n_samples:,}")
+    print(f"Entropy source: {meta.get('entropy_source')}")
+    print(f"Slate mode: {meta.get('slate_mode')}")
+    print(f"Target date: {meta.get('date')}")
+    print(f"Sports: {meta.get('sports', 'mlb')}")
+    print(f"Games loaded: {meta.get('games')}")
+    print(f"Kalshi markets scanned: {meta.get('kalshi_markets')}")
+    print(f"Recognized legs: {meta.get('recognized_legs')}")
+    print(f"Random bytes consumed: {meta.get('random_bytes_consumed', 0):,}")
+    print(f"Samples collected: {meta.get('samples_collected', 0):,}")
     print()
     print("Top 12 legs by activation:")
-    for rank, idx in enumerate(ranked[:12], start=1):
-        leg = legs[idx]
-        freq = activation[idx]
-        bar = "#" * int(freq * 30)
-        print(f"{rank:2d}. {leg.label:<24} {freq:.3f} {bar}")
+    for item in summary["top_legs"]:
+        bar = "#" * int(item["activation"] * 30)
+        print(f"{item['rank']:2d}. {item['label']:<24} {item['activation']:.3f} {bar}")
 
     print()
     print("Recommended parlays:")
-    for size in (3, 4, 5):
-        parlay = build_greedy_parlay(legs, activation, co_activation, size)
-        if not parlay:
+    for parlay in summary["parlays"]:
+        if not parlay["legs"]:
             print()
-            print(f"{size}-leg parlay unavailable for this slate")
+            print(f"{parlay['requested_size']}-leg parlay unavailable for this slate")
             continue
-        combo_prob = float(np.prod([activation[idx] for idx in parlay])) if parlay else 0.0
-        payout = (1.0 / combo_prob) if combo_prob > 0 else float("inf")
         print()
         print(
-            f"{len(parlay)}-leg parlay "
-            f"(requested {size}, naive fair-odds estimate: {payout:.1f}x)"
+            f"{parlay['actual_size']}-leg parlay "
+            f"(requested {parlay['requested_size']}, naive fair-odds estimate: "
+            f"{parlay['payout_estimate']:.1f}x)"
         )
-        for idx in parlay:
-            leg = legs[idx]
-            print(f"  - {leg.label:<24} act={activation[idx]:.3f} | {leg.notes}")
+        for item in parlay["legs"]:
+            print(f"  - {item['label']:<24} act={item['activation']:.3f} | {item['notes']}")
 
-    hr_candidates = [idx for idx in ranked if is_hr_prop(legs[idx])]
-    if hr_candidates:
-        best_hr = hr_candidates[0]
+    if summary["moonshot"]:
         print()
         print("Moonshot add-on:")
         print(
-            f"  - {legs[best_hr].label} act={activation[best_hr]:.3f} | "
-            f"{legs[best_hr].notes}"
+            f"  - {summary['moonshot']['label']} act={summary['moonshot']['activation']:.3f} | "
+            f"{summary['moonshot']['notes']}"
         )
 
     print()
     print("Fades:")
-    for idx in ranked[-6:]:
-        leg = legs[idx]
-        print(f"  - {leg.label:<24} act={activation[idx]:.3f} | {leg.notes}")
+    for item in summary["fades"]:
+        print(f"  - {item['label']:<24} act={item['activation']:.3f} | {item['notes']}")
+
+
+def run_oracle(
+    *,
+    date_str: str,
+    sport: str = "mlb",
+    slate_mode: str = "auto",
+    score_source: str = "implied",
+    kalshi_pages: int = 25,
+    fallback: bool = False,
+    n_bytes: int = 65536,
+    samples_per_beta: int = 1500,
+    warmup: int = 300,
+    thin: int = 3,
+) -> dict:
+    sports = ["mlb", "nba"] if sport == "both" else [sport]
+    legs, resolved_slate_mode, loader_meta = load_legs(
+        date_str=date_str,
+        mode=slate_mode,
+        sports=sports,
+        kalshi_pages=kalshi_pages,
+    )
+    if score_source == "ising":
+        entropy = QuantumEntropySource(n_bytes=n_bytes, fallback=fallback)
+        samples = run_ensemble(
+            legs=legs,
+            qrng=entropy,
+            betas=DEFAULT_BETAS,
+            samples_per_beta=samples_per_beta,
+            warmup=warmup,
+            thin=thin,
+        )
+        summary = summarize_results(legs, samples, entropy, resolved_slate_mode, loader_meta)
+    else:
+        entropy = StaticEntropySource(
+            "Direct market scoring"
+            if score_source == "implied"
+            else (
+                "MLB residual market scoring (Cash tier only)"
+                if score_source == "residual"
+                else "Direct heuristic market scoring"
+            )
+        )
+        cash_activation = None
+        cash_co_activation = None
+        if score_source == "residual":
+            cash_activation, cash_co_activation = direct_activation_and_coactivation(
+                legs,
+                "residual",
+                date_str=date_str,
+            )
+            activation, co_activation = direct_activation_and_coactivation(
+                legs,
+                "implied",
+                date_str=date_str,
+            )
+        else:
+            activation, co_activation = direct_activation_and_coactivation(
+                legs,
+                score_source,
+                date_str=date_str,
+            )
+        summary = summarize_from_scores(
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            entropy_source=entropy,
+            slate_mode=resolved_slate_mode,
+            loader_meta=loader_meta,
+            cash_activation=cash_activation,
+            cash_co_activation=cash_co_activation,
+        )
+    summary["config"] = {
+        "date": date_str,
+        "sport": sport,
+        "slate_mode": slate_mode,
+        "score_source": score_source,
+        "kalshi_pages": kalshi_pages,
+        "fallback": fallback,
+        "bytes": n_bytes,
+        "samples_per_beta": samples_per_beta,
+        "warmup": warmup,
+        "thin": thin,
+    }
+    return summary
 
 
 def run_ensemble(
@@ -997,7 +2120,7 @@ def run_ensemble(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Quantum Parlay Oracle")
+    parser = argparse.ArgumentParser(description="Parlay State Search")
     parser.add_argument(
         "--sport",
         choices=["mlb", "nba", "both"],
@@ -1011,9 +2134,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--slate-mode",
-        choices=["auto", "live", "static"],
+        choices=["auto", "live"],
         default="auto",
-        help="Use live API ingestion, static fallback, or auto",
+        help="Use live API ingestion",
+    )
+    parser.add_argument(
+        "--score-source",
+        choices=["heuristic", "implied", "residual", "ising"],
+        default="implied",
+        help="Scoring engine for state search",
     )
     parser.add_argument(
         "--kalshi-pages",
@@ -1059,32 +2188,62 @@ def main() -> None:
 
     print()
     print("=" * 68)
-    print("QUANTUM PARLAY ORACLE")
+    print("PARLAY STATE SEARCH")
     print("Multi-Sport Prototype v0.3")
     print("=" * 68)
-    print("Sampling an Ising energy landscape with quantum-resolved Gibbs updates")
+    if args.score_source == "ising":
+        print("Experimental mode: Ising energy landscape with Gibbs sampling")
+    elif args.score_source == "implied":
+        print("Default market mode: state search over direct implied probabilities")
+    elif args.score_source == "residual":
+        print("Hybrid market mode: MLB residuals for Cash tier, implied prices elsewhere")
+    else:
+        print("Default market mode: state search over implied probabilities plus heuristics")
     print()
-
-    legs, slate_mode, loader_meta = load_legs(
+    summary = run_oracle(
         date_str=args.date,
-        mode=args.slate_mode,
-        sports=sports,
+        sport=args.sport,
+        slate_mode=args.slate_mode,
+        score_source=args.score_source,
         kalshi_pages=args.kalshi_pages,
-    )
-
-    qrng = QuantumEntropySource(n_bytes=args.bytes, fallback=args.fallback)
-
-    print()
-    print("Running multi-temperature ensemble...")
-    samples = run_ensemble(
-        legs=legs,
-        qrng=qrng,
-        betas=DEFAULT_BETAS,
+        fallback=args.fallback,
+        n_bytes=args.bytes,
         samples_per_beta=args.samples_per_beta,
         warmup=args.warmup,
         thin=args.thin,
     )
-    analyze(legs, samples, qrng, slate_mode=slate_mode, loader_meta=loader_meta)
+
+    meta = summary["meta"]
+    print("Results")
+    print("=" * 68)
+    print(f"Scoring mode: {summary['config']['score_source']}")
+    print(f"Entropy source: {meta.get('entropy_source')}")
+    print(f"Slate mode: {meta.get('slate_mode')}")
+    print(f"Target date: {meta.get('date')}")
+    print(f"Sports: {meta.get('sports', 'mlb')}")
+    print(f"Games loaded: {meta.get('games')}")
+    print(f"Kalshi markets scanned: {meta.get('kalshi_markets')}")
+    print(f"Recognized legs: {meta.get('recognized_legs')}")
+    print(f"Score rows collected: {meta.get('samples_collected', 0):,}")
+    print()
+    print("Top 12 legs by score:")
+    for item in summary["top_legs"]:
+        bar = "#" * int(item["activation"] * 30)
+        print(f"{item['rank']:2d}. {item['label']:<24} {item['activation']:.3f} {bar}")
+    print()
+    print("Recommended parlays:")
+    for parlay in summary["parlays"]:
+        if not parlay["legs"]:
+            print(f"{parlay['requested_size']}-leg parlay unavailable for this slate")
+            continue
+        print(
+            f"{parlay['actual_size']}-leg parlay "
+            f"(requested {parlay['requested_size']}, naive fair-odds estimate: "
+            f"{parlay['payout_estimate']:.1f}x)"
+        )
+        for item in parlay["legs"]:
+            print(f"  - {item['label']:<24} score={item['activation']:.3f} | {item['notes']}")
+        print()
 
 
 if __name__ == "__main__":

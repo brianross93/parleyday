@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parlay State Search</title>
+    <style>
+      :root {
+        --bg: #f3efe4;
+        --panel: #fffaf0;
+        --ink: #1f2933;
+        --muted: #52606d;
+        --line: #d9cdb5;
+        --accent: #0b6e4f;
+        --accent-2: #8b1e3f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(184,134,11,.18), transparent 28%),
+          radial-gradient(circle at top right, rgba(11,110,79,.12), transparent 22%),
+          linear-gradient(180deg, #f7f2e8 0%, var(--bg) 100%);
+      }
+      .shell {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+      .hero {
+        display: grid;
+        grid-template-columns: 1.2fr .8fr;
+        gap: 24px;
+        align-items: start;
+      }
+      .title-card, .panel, .card {
+        background: rgba(255, 250, 240, 0.92);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 12px 30px rgba(31, 41, 51, 0.08);
+      }
+      .title-card, .panel, .card, .stat {
+        padding: 20px;
+      }
+      h1, h2, h3 {
+        margin: 0;
+        font-weight: 700;
+      }
+      h1 {
+        font-size: 2.4rem;
+        line-height: 1.05;
+      }
+      .sub {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 1rem;
+        max-width: 60ch;
+      }
+      .badge-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      .badge {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 0.85rem;
+        background: rgba(255,255,255,0.6);
+      }
+      form {
+        display: grid;
+        gap: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .label-title {
+        color: var(--ink);
+        font-weight: 700;
+      }
+      .help {
+        color: var(--muted);
+        font-size: 0.8rem;
+        line-height: 1.35;
+      }
+      input, select, button {
+        font: inherit;
+      }
+      input, select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: white;
+        color: var(--ink);
+      }
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--ink);
+      }
+      .check input {
+        width: auto;
+      }
+      details {
+        border-top: 1px solid rgba(217,205,181,0.8);
+        padding-top: 10px;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 700;
+        color: var(--ink);
+      }
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 12px 16px;
+        background: linear-gradient(135deg, var(--accent) 0%, #0f8f67 100%);
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .content {
+        margin-top: 24px;
+        display: grid;
+        gap: 18px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .stat {
+        background: rgba(255, 250, 240, 0.92);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 12px 30px rgba(31, 41, 51, 0.08);
+      }
+      .stat .k {
+        color: var(--muted);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .stat .v {
+        margin-top: 8px;
+        font-size: 1.3rem;
+        font-weight: 700;
+      }
+      .columns {
+        display: grid;
+        grid-template-columns: 1.2fr .8fr;
+        gap: 18px;
+      }
+      .stack {
+        display: grid;
+        gap: 18px;
+      }
+      .card h3 {
+        margin-bottom: 14px;
+      }
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+      .item {
+        border-top: 1px solid rgba(217,205,181,0.7);
+        padding-top: 10px;
+      }
+      .item:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .label-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+      }
+      .label {
+        font-weight: 700;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.88rem;
+        margin-top: 4px;
+      }
+      .parlay-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .payout {
+        color: var(--accent-2);
+        font-weight: 700;
+      }
+      .error {
+        border: 1px solid #d64545;
+        background: #fff1f1;
+        color: #8a1f1f;
+        padding: 14px 16px;
+        border-radius: 14px;
+      }
+      .empty {
+        color: var(--muted);
+      }
+      @media (max-width: 1100px) {
+        .hero, .columns { grid-template-columns: 1fr; }
+        .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
+      @media (max-width: 700px) {
+        .grid, .stats { grid-template-columns: 1fr; }
+        h1 { font-size: 2rem; }
+        .shell { padding: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="hero">
+        <section class="title-card">
+          <h1>Parlay State Search Dashboard</h1>
+          <p class="sub">
+            Run the state-search engine locally, inspect the live slate, and review recommended actions,
+            top scores, fades, and the moonshot add-on in one place.
+          </p>
+          <div class="badge-row">
+            <div class="badge">Local Flask app</div>
+            <div class="badge">Market-first default model</div>
+            <div class="badge">MLB / NBA capable</div>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <h2>Run The Search</h2>
+          <form method="post">
+            <div class="grid">
+              <label>
+                <span class="label-title">Game Date</span>
+                <span class="help">Which slate to analyze.</span>
+                <input type="date" name="date" value="{{ form.date }}">
+              </label>
+              <label>
+                <span class="label-title">Sport</span>
+                <span class="help">Baseball, basketball, or both together.</span>
+                <select name="sport">
+                  {% for value in ["mlb", "nba", "both"] %}
+                    <option value="{{ value }}" {% if form.sport == value %}selected{% endif %}>{{ value|upper }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                <span class="label-title">Data Source</span>
+                <span class="help">Auto tries the live slate and reports a clear error if it cannot build one. Live requires a real live slate.</span>
+                <select name="slate_mode">
+                  {% for value in ["auto", "live"] %}
+                    <option value="{{ value }}" {% if form.slate_mode == value %}selected{% endif %}>{{ value }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                <span class="label-title">Scoring Engine</span>
+                <span class="help">Use direct market probabilities by default. MLB residual mode currently only adjusts the Cash tier.</span>
+                <select name="score_source">
+                  <option value="implied" {% if form.score_source == "implied" %}selected{% endif %}>Pure market implied (Recommended)</option>
+                  <option value="residual" {% if form.score_source == "residual" %}selected{% endif %}>MLB residuals for Cash tier</option>
+                  <option value="heuristic" {% if form.score_source == "heuristic" %}selected{% endif %}>Market + heuristics (Aggressive)</option>
+                  <option value="ising" {% if form.score_source == "ising" %}selected{% endif %}>Experimental Ising / Gibbs</option>
+                </select>
+              </label>
+              <label>
+                <span class="label-title">Speed vs Accuracy</span>
+                <span class="help">Only affects experimental Ising mode. Direct market modes ignore sampling depth.</span>
+                <select name="samples_per_beta">
+                  <option value="100" {% if form.samples_per_beta == 100 %}selected{% endif %}>Fast preview</option>
+                  <option value="250" {% if form.samples_per_beta == 250 %}selected{% endif %}>Balanced</option>
+                  <option value="750" {% if form.samples_per_beta == 750 %}selected{% endif %}>Deep run</option>
+                  <option value="1500" {% if form.samples_per_beta == 1500 %}selected{% endif %}>Full sweep</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="check">
+              <input type="checkbox" name="fallback" {% if form.fallback %}checked{% endif %}>
+              If using experimental Ising mode, skip ANU and use local randomness immediately
+            </label>
+
+            <details>
+              <summary>Advanced Settings</summary>
+              <div class="grid" style="margin-top: 12px;">
+                <label>
+                  <span class="label-title">Market Search Depth</span>
+                  <span class="help">How aggressively to scan Kalshi pages when direct event lookups are not enough.</span>
+                  <input type="number" min="1" max="200" name="kalshi_pages" value="{{ form.kalshi_pages }}">
+                </label>
+                <label>
+                  <span class="label-title">Warmup Rounds</span>
+                  <span class="help">Experimental Ising mode only.</span>
+                  <input type="number" min="0" name="warmup" value="{{ form.warmup }}">
+                </label>
+                <label>
+                  <span class="label-title">Sample Spacing</span>
+                  <span class="help">Experimental Ising mode only.</span>
+                  <input type="number" min="1" name="thin" value="{{ form.thin }}">
+                </label>
+                <label>
+                  <span class="label-title">Entropy Buffer</span>
+                  <span class="help">Experimental Ising mode only.</span>
+                  <input type="number" min="1024" step="1024" name="bytes" value="{{ form.bytes }}">
+                </label>
+              </div>
+            </details>
+
+            <button type="submit">Run Search</button>
+          </form>
+        </aside>
+      </div>
+
+      <div class="content">
+        {% if error %}
+          <div class="error">{{ error }}</div>
+        {% endif %}
+
+        {% if result %}
+          <section class="stats">
+            <div class="stat"><div class="k">Slate Mode</div><div class="v">{{ result.meta.slate_mode }}</div></div>
+            <div class="stat"><div class="k">Sports</div><div class="v">{{ result.meta.sports }}</div></div>
+            <div class="stat"><div class="k">Games</div><div class="v">{{ result.meta.games }}</div></div>
+            <div class="stat"><div class="k">Recognized Legs</div><div class="v">{{ result.meta.recognized_legs }}</div></div>
+            <div class="stat"><div class="k">Score Mode</div><div class="v">{{ result.config.score_source }}</div></div>
+            <div class="stat"><div class="k">Engine</div><div class="v">{{ result.meta.entropy_source }}</div></div>
+          </section>
+
+          <div class="columns">
+            <div class="stack">
+              <section class="card">
+                <h3>Tiered Actions</h3>
+                <div class="list">
+                  {% for parlay in result.tier_parlays %}
+                    <div class="item">
+                      <div class="parlay-header">
+                        <div class="label">{{ parlay.label }} · {{ parlay.actual_size }}-Leg Parlay</div>
+                        <div class="payout">
+                          {% if parlay.payout_estimate %}
+                            ~{{ "%.1f"|format(parlay.payout_estimate) }}x
+                          {% else %}
+                            unavailable
+                          {% endif %}
+                        </div>
+                      </div>
+                      {% if parlay.label == "Cash" and parlay.residual_requested %}
+                        <div class="meta">
+                          Cash engine:
+                          {% if parlay.score_mode == "residual" %}
+                            MLB residual model
+                          {% elif parlay.score_mode == "implied_fallback" %}
+                            implied fallback
+                          {% else %}
+                            implied
+                          {% endif %}
+                        </div>
+                      {% endif %}
+                      <div class="meta">{{ parlay.description }} Target band: ~{{ parlay.target_payout_min }}x-{{ parlay.target_payout_max }}x. Bankroll hint: {{ parlay.bankroll_hint }}</div>
+                      {% if parlay.legs %}
+                        <div class="list">
+                          {% for leg in parlay.legs %}
+                            <div class="item">
+                              <div class="label-row">
+                                <div class="label">{{ leg.label }}</div>
+                                <div>{{ "%.3f"|format(leg.activation) }}</div>
+                              </div>
+                              <div class="meta">
+                                {{ leg.game }} · implied {{ "%.3f"|format(leg.implied_prob) }}
+                                {% if parlay.label == "Cash" and parlay.residual_requested %}
+                                  · delta {{ "%+.3f"|format(leg.score_delta) }}
+                                {% endif %}
+                                · {{ leg.notes }}
+                              </div>
+                            </div>
+                          {% endfor %}
+                        </div>
+                      {% else %}
+                        <div class="empty">No viable parlay inside this implied-probability band for the current slate.</div>
+                      {% endif %}
+                    </div>
+                  {% endfor %}
+                </div>
+              </section>
+
+              <section class="card">
+                <h3>Top Scores</h3>
+                <div class="list">
+                  {% for leg in result.top_legs %}
+                    <div class="item">
+                      <div class="label-row">
+                        <div class="label">#{{ leg.rank }} {{ leg.label }}</div>
+                        <div>{{ "%.3f"|format(leg.activation) }}</div>
+                      </div>
+                      <div class="meta">{{ leg.game }} · {{ leg.category }} · {{ leg.notes }}</div>
+                    </div>
+                  {% endfor %}
+                </div>
+              </section>
+            </div>
+
+            <div class="stack">
+              <section class="card">
+                <h3>Moonshot</h3>
+                {% if result.moonshot %}
+                  <div class="label">{{ result.moonshot.label }}</div>
+                  <div class="meta">{{ result.moonshot.game }} · {{ result.moonshot.notes }}</div>
+                  <div class="meta">Score {{ "%.3f"|format(result.moonshot.activation) }}</div>
+                {% else %}
+                  <div class="empty">No moonshot HR leg was available on this slate.</div>
+                {% endif %}
+              </section>
+
+              <section class="card">
+                <h3>Fades</h3>
+                <div class="list">
+                  {% for leg in result.fades %}
+                    <div class="item">
+                      <div class="label-row">
+                        <div class="label">{{ leg.label }}</div>
+                        <div>{{ "%.3f"|format(leg.activation) }}</div>
+                      </div>
+                      <div class="meta">{{ leg.game }} · {{ leg.notes }}</div>
+                    </div>
+                  {% endfor %}
+                </div>
+              </section>
+
+              <section class="card">
+                <h3>Run Notes</h3>
+                <div class="list">
+                  <div class="item">
+                    <div class="label">Target Date</div>
+                    <div class="meta">{{ result.config.date }}</div>
+                  </div>
+                  <div class="item">
+                    <div class="label">Kalshi Markets Scanned</div>
+                    <div class="meta">{{ result.meta.kalshi_markets }}</div>
+                  </div>
+                  <div class="item">
+                    <div class="label">Model Engine</div>
+                    <div class="meta">{{ result.meta.entropy_source }}</div>
+                  </div>
+                  <div class="item">
+                    <div class="label">Experimental Randomness</div>
+                    <div class="meta">{{ "enabled" if result.config.score_source == "ising" else "not used" }}</div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        {% else %}
+          <section class="card">
+            <h3>Ready</h3>
+            <p class="empty">Choose a date and run the state search. Results will appear here.</p>
+          </section>
+        {% endif %}
+      </div>
+    </div>
+  </body>
+  </html>
