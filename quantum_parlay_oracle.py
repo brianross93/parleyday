@@ -1,4 +1,5 @@
 import argparse
+import os
 import re
 import time
 from dataclasses import dataclass, replace
@@ -17,6 +18,23 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     statsapi = None
 
+try:
+    from data_pipeline.cache import DEFAULT_DB_PATH, SnapshotStore
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "parleyday.sqlite")
+    SnapshotStore = None
+
+try:
+    from data_pipeline.mlb_profiles import team_context_from_cached_payload
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    team_context_from_cached_payload = None
+
+try:
+    from monte_carlo.mlb import MLBGameConfig, MLBGameSimulator
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    MLBGameConfig = None
+    MLBGameSimulator = None
+
 
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
@@ -28,6 +46,11 @@ DATE_CODE_RE = re.compile(r"-(\d{2}[A-Z]{3}\d{2})(\d{4})?([A-Z0-9]+)?$")
 TEAM_WORD_RE = re.compile(r"[^a-z0-9]+")
 EASTERN_TZ = ZoneInfo("America/New_York")
 LEAGUE_AVG_RUNS = 4.5
+NBA_BASELINE_POINTS = 112.0
+NBA_HOME_COURT_POINTS = 2.5
+SIMULATION_RUNS = 4000
+DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS = 36.0
+DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS = 6.0
 
 TEAM_CODES = {
     "Arizona Diamondbacks": ["AZ", "ARI"],
@@ -124,6 +147,55 @@ NBA_CODE_TO_NAME = {
     "UTA": "Utah Jazz",
     "WAS": "Washington Wizards",
 }
+
+
+def cache_db_path() -> str:
+    return os.getenv("PARLEYDAY_DB_PATH", DEFAULT_DB_PATH)
+
+
+def load_cached_payload(
+    *,
+    source: str,
+    sport: str,
+    entity_type: str,
+    entity_key: str,
+    as_of_date: str,
+    max_age_hours: float,
+):
+    if SnapshotStore is None:
+        return None
+    snapshot = SnapshotStore(cache_db_path()).get_snapshot(
+        source=source,
+        sport=sport,
+        entity_type=entity_type,
+        entity_key=entity_key,
+        as_of_date=as_of_date,
+        max_age_hours=max_age_hours,
+    )
+    return None if snapshot is None else snapshot["payload"]
+
+
+def store_cached_payload(
+    *,
+    source: str,
+    sport: str,
+    entity_type: str,
+    entity_key: str,
+    as_of_date: str,
+    payload,
+    is_volatile: bool,
+) -> None:
+    if SnapshotStore is None:
+        return
+    SnapshotStore(cache_db_path()).upsert_snapshot(
+        source=source,
+        sport=sport,
+        entity_type=entity_type,
+        entity_key=entity_key,
+        as_of_date=as_of_date,
+        payload=payload,
+        is_volatile=is_volatile,
+    )
 
 
 class QuantumEntropySource:
@@ -796,6 +868,124 @@ def fetch_live_mlb_team_form(date_str: str) -> dict[str, dict]:
     return team_form
 
 
+def fetch_live_nba_team_form(date_str: str) -> dict[str, dict]:
+    games = fetch_nba_schedule(date_str)
+    team_form = {}
+    for game in games:
+        for team_code, detail in ((game.away_code, game.away_detail), (game.home_code, game.home_detail)):
+            if team_code in team_form:
+                continue
+            wins = 0
+            losses = 0
+            match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", detail or "")
+            if match:
+                wins = int(match.group(1))
+                losses = int(match.group(2))
+            games_played = max(wins + losses, 1)
+            win_pct = wins / games_played if games_played else 0.5
+            net_rating_proxy = (win_pct - 0.5) * 24.0
+            team_form[team_code] = {
+                "win_pct": win_pct,
+                "games_played": games_played,
+                "net_rating_proxy": net_rating_proxy,
+            }
+    return team_form
+
+
+def load_team_form_snapshot(date_str: str, sport: str) -> dict[str, dict]:
+    if sport == "mlb":
+        cached = load_cached_payload(
+            source="mlb_statsapi",
+            sport="mlb",
+            entity_type="team_form",
+            entity_key="daily",
+            as_of_date=date_str,
+            max_age_hours=DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS,
+        )
+        if cached is not None:
+            return cached
+        payload = fetch_live_mlb_team_form(date_str)
+        store_cached_payload(
+            source="mlb_statsapi",
+            sport="mlb",
+            entity_type="team_form",
+            entity_key="daily",
+            as_of_date=date_str,
+            payload=payload,
+            is_volatile=False,
+        )
+        return payload
+
+    if sport == "nba":
+        cached = load_cached_payload(
+            source="nba_scoreboard",
+            sport="nba",
+            entity_type="team_form",
+            entity_key="daily",
+            as_of_date=date_str,
+            max_age_hours=DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS,
+        )
+        if cached is not None:
+            return cached
+        payload = fetch_live_nba_team_form(date_str)
+        store_cached_payload(
+            source="nba_scoreboard",
+            sport="nba",
+            entity_type="team_form",
+            entity_key="daily",
+            as_of_date=date_str,
+            payload=payload,
+            is_volatile=False,
+        )
+        return payload
+
+    raise ValueError(f"Unsupported sport for team-form snapshot: {sport}")
+
+
+def load_game_context_snapshot(date_str: str, sport: str, matchup: str) -> dict | None:
+    if sport == "mlb":
+        return load_cached_payload(
+            source="mlb_refresh",
+            sport="mlb",
+            entity_type="game_context",
+            entity_key=matchup,
+            as_of_date=date_str,
+            max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+        )
+    if sport == "nba":
+        return load_cached_payload(
+            source="nba_refresh",
+            sport="nba",
+            entity_type="game_context",
+            entity_key=matchup,
+            as_of_date=date_str,
+            max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+        )
+    return None
+
+
+def load_matchup_profile_snapshot(date_str: str, matchup: str) -> dict | None:
+    return load_cached_payload(
+        source="mlb_refresh",
+        sport="mlb",
+        entity_type="matchup_profile",
+        entity_key=matchup,
+        as_of_date=date_str,
+        max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+    )
+
+
+def load_nba_matchup_profile_snapshot(date_str: str, matchup: str) -> dict | None:
+    return load_cached_payload(
+        source="nba_refresh",
+        sport="nba",
+        entity_type="matchup_profile",
+        entity_key=matchup,
+        as_of_date=date_str,
+        max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+    )
+
+
 def direct_total_line(leg: Leg) -> float | None:
     return extract_total_line_value(leg.label)
 
@@ -853,6 +1043,156 @@ def live_mlb_residual_adjustment(leg: Leg, team_form: dict[str, dict]) -> float:
         return float(adjustment)
 
     return 0.0
+
+
+def expected_mlb_runs(
+    away_code: str,
+    home_code: str,
+    team_form: dict[str, dict],
+    game_context: dict | None = None,
+) -> tuple[float, float]:
+    away = team_form.get(away_code)
+    home = team_form.get(home_code)
+    if away is None or home is None:
+        return LEAGUE_AVG_RUNS, LEAGUE_AVG_RUNS
+    away_mean = (
+        float(away["runs_scored_pg"]) + float(home["runs_allowed_pg"])
+    ) / 2.0
+    home_mean = (
+        float(home["runs_scored_pg"]) + float(away["runs_allowed_pg"])
+    ) / 2.0
+    away_recent = float(away["recent_win_pct"]) - 0.5
+    home_recent = float(home["recent_win_pct"]) - 0.5
+    away_mean += 0.35 * away_recent - 0.20 * home_recent
+    home_mean += 0.35 * home_recent - 0.20 * away_recent + 0.15
+    if game_context:
+        weather = game_context.get("weather") or {}
+        temperature_f = weather.get("temperature_f")
+        wind_speed_mph = weather.get("wind_speed_mph")
+        if temperature_f is not None:
+            if temperature_f >= 82:
+                away_mean += 0.20
+                home_mean += 0.20
+            elif temperature_f <= 52:
+                away_mean -= 0.20
+                home_mean -= 0.20
+        if wind_speed_mph is not None and wind_speed_mph >= 12:
+            away_mean += 0.12
+            home_mean += 0.12
+        lineup_status = game_context.get("lineup_status") or {}
+        if not (lineup_status.get("away_confirmed") and lineup_status.get("home_confirmed")):
+            away_mean = (away_mean * 0.75) + (LEAGUE_AVG_RUNS * 0.25)
+            home_mean = (home_mean * 0.75) + (LEAGUE_AVG_RUNS * 0.25)
+        availability = game_context.get("availability") or {}
+        bullpen = game_context.get("bullpen") or {}
+        away_unavailable = availability.get("away", {}).get("unavailable_players", [])
+        home_unavailable = availability.get("home", {}).get("unavailable_players", [])
+        away_lineup = set(game_context.get("lineups", {}).get("away", []))
+        home_lineup = set(game_context.get("lineups", {}).get("home", []))
+        away_missing_core = sum(1 for player in away_unavailable if player.get("player_name") in away_lineup)
+        home_missing_core = sum(1 for player in home_unavailable if player.get("player_name") in home_lineup)
+        away_mean -= 0.20 * away_missing_core
+        home_mean -= 0.20 * home_missing_core
+        away_bullpen_fatigue = float(bullpen.get("away", {}).get("fatigue_score", 0.0) or 0.0)
+        home_bullpen_fatigue = float(bullpen.get("home", {}).get("fatigue_score", 0.0) or 0.0)
+        home_mean += 0.08 * away_bullpen_fatigue
+        away_mean += 0.08 * home_bullpen_fatigue
+        away_pitcher = (game_context.get("probable_pitchers") or {}).get("away", {}).get("fullName")
+        home_pitcher = (game_context.get("probable_pitchers") or {}).get("home", {}).get("fullName")
+        away_pitcher_unavailable = any(
+            player.get("player_name") == away_pitcher
+            for player in away_unavailable
+        )
+        home_pitcher_unavailable = any(
+            player.get("player_name") == home_pitcher
+            for player in home_unavailable
+        )
+        if away_pitcher and away_pitcher_unavailable:
+            home_mean += 0.45
+        if home_pitcher and home_pitcher_unavailable:
+            away_mean += 0.45
+    return max(2.5, away_mean), max(2.5, home_mean)
+
+
+def nba_availability_penalty(entries: list[dict]) -> float:
+    penalty = 0.0
+    for entry in entries:
+        status = str(entry.get("status", "")).strip().lower()
+        if status == "out":
+            penalty += 1.75
+        elif status == "doubtful":
+            penalty += 1.0
+        elif status == "questionable":
+            penalty += 0.55
+        elif status == "probable":
+            penalty += 0.15
+    return penalty
+
+
+def expected_nba_points(
+    away_code: str,
+    home_code: str,
+    team_form: dict[str, dict],
+    game_context: dict | None = None,
+) -> tuple[float, float]:
+    away = team_form.get(away_code)
+    home = team_form.get(home_code)
+    if away is None or home is None:
+        return NBA_BASELINE_POINTS - 1.0, NBA_BASELINE_POINTS + 1.0
+    away_strength = float(away["net_rating_proxy"])
+    home_strength = float(home["net_rating_proxy"])
+    away_mean = NBA_BASELINE_POINTS + (away_strength * 0.8) - (home_strength * 0.45) - NBA_HOME_COURT_POINTS
+    home_mean = NBA_BASELINE_POINTS + (home_strength * 0.8) - (away_strength * 0.45) + NBA_HOME_COURT_POINTS
+    if game_context:
+        availability = game_context.get("availability") or {}
+        away_penalty = nba_availability_penalty(availability.get("away", []))
+        home_penalty = nba_availability_penalty(availability.get("home", []))
+        away_mean -= away_penalty
+        home_mean -= home_penalty
+        if not availability.get("away_submitted", True):
+            away_mean = (away_mean * 0.7) + (NBA_BASELINE_POINTS * 0.3)
+        if not availability.get("home_submitted", True):
+            home_mean = (home_mean * 0.7) + (NBA_BASELINE_POINTS * 0.3)
+    return float(np.clip(away_mean, 96.0, 132.0)), float(np.clip(home_mean, 96.0, 132.0))
+
+
+def simulate_game_distributions(
+    sport: str,
+    away_code: str,
+    home_code: str,
+    date_str: str,
+    n_sims: int = SIMULATION_RUNS,
+) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(abs(hash((sport, away_code, home_code, date_str))) % (2**32))
+    if sport == "mlb":
+        team_form = load_team_form_snapshot(date_str, "mlb")
+        game_context = load_game_context_snapshot(date_str, "mlb", f"{away_code}@{home_code}")
+        away_mean, home_mean = expected_mlb_runs(away_code, home_code, team_form, game_context)
+        away_scores = rng.poisson(lam=away_mean, size=n_sims)
+        home_scores = rng.poisson(lam=home_mean, size=n_sims)
+        tie_mask = away_scores == home_scores
+        while np.any(tie_mask):
+            away_scores[tie_mask] += rng.poisson(lam=0.6, size=int(np.sum(tie_mask)))
+            home_scores[tie_mask] += rng.poisson(lam=0.6, size=int(np.sum(tie_mask)))
+            tie_mask = away_scores == home_scores
+        return away_scores.astype(np.int16), home_scores.astype(np.int16)
+
+    if sport == "nba":
+        team_form = load_team_form_snapshot(date_str, "nba")
+        game_context = load_game_context_snapshot(date_str, "nba", f"{away_code}@{home_code}")
+        away_mean, home_mean = expected_nba_points(away_code, home_code, team_form, game_context)
+        away_scores = np.rint(rng.normal(loc=away_mean, scale=11.5, size=n_sims)).astype(np.int16)
+        home_scores = np.rint(rng.normal(loc=home_mean, scale=11.0, size=n_sims)).astype(np.int16)
+        away_scores = np.clip(away_scores, 75, 170)
+        home_scores = np.clip(home_scores, 75, 170)
+        tie_mask = away_scores == home_scores
+        while np.any(tie_mask):
+            away_scores[tie_mask] += rng.integers(0, 8, size=int(np.sum(tie_mask)), endpoint=False)
+            home_scores[tie_mask] += rng.integers(0, 8, size=int(np.sum(tie_mask)), endpoint=False)
+            tie_mask = away_scores == home_scores
+        return away_scores, home_scores
+
+    raise ValueError(f"Unsupported sport for simulation: {sport}")
 
 
 def is_pregame_game(game: GameInfo) -> bool:
@@ -951,9 +1291,17 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
             player = title.split(":", 1)[0].strip()
             return Leg(-1, f"{player} O 1 HR", "prop", game.matchup, implied_prob, note, game.sport)
 
+        if event_ticker.startswith("KXMLBHIT-") or " hits?" in title_lower:
+            label = structured_threshold_label(market, "H", "hits")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+
         if "strikeout" in title_lower or "strikeouts" in title_lower or event_ticker.startswith("KXMLBSO"):
+            label = structured_threshold_label(market, "K", "strikeouts")
+            if label:
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
             player = title.split(":")[0].strip()
-            return Leg(-1, f"{player} O K's", "prop", game.matchup, implied_prob, note, game.sport)
+            return Leg(-1, f"{player} O 1 K", "prop", game.matchup, implied_prob, note, game.sport)
 
         if event_ticker.startswith("KXMLBTOTAL") or "total runs?" in title_lower:
             strike = market.get("floor_strike")
@@ -1071,13 +1419,62 @@ def load_live_legs(date_str: str, sports: list[str], kalshi_pages: int) -> tuple
     return legs, meta
 
 
+def load_cached_recognized_legs(date_str: str, sports: list[str]) -> tuple[list[Leg], dict] | None:
+    cached_legs: list[Leg] = []
+    cached_meta: dict | None = None
+    for sport in sports:
+        payload = load_cached_payload(
+            source="kalshi",
+            sport=sport,
+            entity_type="recognized_legs",
+            entity_key="daily",
+            as_of_date=date_str,
+            max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+        )
+        if payload is None:
+            continue
+        cached_meta = payload.get("meta", {}) or {}
+        for item in payload.get("legs", []):
+            cached_legs.append(
+                Leg(
+                    id=len(cached_legs),
+                    label=item["label"],
+                    category=item["category"],
+                    game=item["game"],
+                    implied_prob=float(item["implied_prob"]),
+                    notes=item.get("notes", ""),
+                    sport=item.get("sport", sport),
+                )
+            )
+    if not cached_legs:
+        return None
+    meta = {
+        "date": date_str,
+        "sports": ",".join(sports),
+        "games": cached_meta.get("games", 0) if cached_meta else 0,
+        "kalshi_markets": cached_meta.get("kalshi_markets", 0) if cached_meta else 0,
+        "recognized_legs": len(cached_legs),
+        "source": "cache",
+    }
+    return cached_legs, meta
+
+
 def load_legs(date_str: str, mode: str, sports: list[str], kalshi_pages: int) -> tuple[list[Leg], str, dict]:
+    cached = load_cached_recognized_legs(date_str, sports)
+    if cached is not None:
+        cached_legs, meta = cached
+        return cached_legs, "cached", meta
     try:
         live_legs, meta = load_live_legs(date_str, sports=sports, kalshi_pages=kalshi_pages)
         if live_legs:
             return live_legs, "live", meta
         raise RuntimeError("No recognizable Kalshi sports legs found for the target date")
     except Exception as exc:
+        fallback_cached = load_cached_recognized_legs(date_str, sports)
+        if fallback_cached is not None:
+            cached_legs, meta = fallback_cached
+            meta["fallback_reason"] = str(exc)
+            return cached_legs, "cached", meta
         raise RuntimeError(
             f"Live loader unavailable for {date_str}: {exc}. "
             "No fallback slate is used."
@@ -1609,13 +2006,458 @@ def direct_pair_bonus(first: Leg, second: Leg, mode: str) -> float:
     return bonus
 
 
+def simulated_leg_probability(
+    leg: Leg,
+    away_scores: np.ndarray,
+    home_scores: np.ndarray,
+) -> float | None:
+    total_scores = away_scores + home_scores
+    away_code, home_code = leg.game.split("@")
+
+    if leg.category == "ml":
+        side = leg.label.split()[0]
+        if side == away_code:
+            return float(np.mean(away_scores > home_scores))
+        if side == home_code:
+            return float(np.mean(home_scores > away_scores))
+        return None
+
+    if leg.category == "total":
+        line = direct_total_line(leg)
+        if line is None:
+            return None
+        if is_over_leg(leg):
+            return float(np.mean(total_scores > line))
+        if is_under_leg(leg):
+            return float(np.mean(total_scores < line))
+    return None
+
+
+def simulation_activation_and_coactivation(
+    legs: list[Leg],
+    date_str: str,
+) -> tuple[np.ndarray, np.ndarray, dict[int, dict[str, str]]]:
+    implied = np.array([float(leg.implied_prob) for leg in legs], dtype=np.float64)
+    activation = implied.copy()
+    co_activation = np.outer(activation, activation)
+    pricing_details = {
+        idx: {
+            "pricing_source": "market_fallback",
+            "pricing_label": "Market fallback",
+        }
+        for idx in range(len(legs))
+    }
+
+    game_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    mlb_prop_cache: dict[str, dict[str, float]] = {}
+    nba_prop_cache: dict[str, dict[str, float]] = {}
+    for idx, leg in enumerate(legs):
+        if leg.category not in {"ml", "total"}:
+            if leg.sport == "mlb" and leg.category == "prop":
+                if leg.game not in mlb_prop_cache:
+                    game_prop_legs = [candidate for candidate in legs if candidate.game == leg.game and candidate.sport == "mlb" and candidate.category == "prop"]
+                    mlb_prop_cache[leg.game] = simulate_live_mlb_leg_probabilities(leg.game, date_str, game_prop_legs)
+                sim_prob = mlb_prop_cache.get(leg.game, {}).get(leg.label)
+                if sim_prob is not None:
+                    activation[idx] = sim_prob
+                    pricing_details[idx] = {"pricing_source": "simulation", "pricing_label": "Monte Carlo"}
+            if leg.sport == "nba" and leg.category == "prop":
+                if leg.game not in nba_prop_cache:
+                    game_prop_legs = [candidate for candidate in legs if candidate.game == leg.game and candidate.sport == "nba" and candidate.category == "prop"]
+                    nba_prop_cache[leg.game] = simulate_live_nba_leg_probabilities(leg.game, date_str, game_prop_legs)
+                sim_prob = nba_prop_cache.get(leg.game, {}).get(leg.label)
+                if sim_prob is not None:
+                    activation[idx] = sim_prob
+                    pricing_details[idx] = {"pricing_source": "simulation", "pricing_label": "Monte Carlo"}
+            continue
+        cache_key = (leg.sport, leg.game)
+        if cache_key not in game_cache:
+            away_code, home_code = leg.game.split("@")
+            game_cache[cache_key] = simulate_game_distributions(
+                sport=leg.sport,
+                away_code=away_code,
+                home_code=home_code,
+                date_str=date_str,
+            )
+        away_scores, home_scores = game_cache[cache_key]
+        sim_prob = simulated_leg_probability(leg, away_scores, home_scores)
+        if sim_prob is not None:
+            activation[idx] = sim_prob
+            pricing_details[idx] = {"pricing_source": "simulation", "pricing_label": "Monte Carlo"}
+
+    for i, first in enumerate(legs):
+        for j in range(i + 1, len(legs)):
+            second = legs[j]
+            if first.sport == second.sport and first.game == second.game:
+                cache_key = (first.sport, first.game)
+                away_scores, home_scores = game_cache.get(cache_key, (None, None))
+                if away_scores is not None and home_scores is not None:
+                    first_mask = simulated_leg_probability(first, away_scores, home_scores)
+                    second_mask = simulated_leg_probability(second, away_scores, home_scores)
+                    if first_mask is not None and second_mask is not None:
+                        first_hit = leg_hit_mask(first, away_scores, home_scores)
+                        second_hit = leg_hit_mask(second, away_scores, home_scores)
+                        if first_hit is not None and second_hit is not None:
+                            joint = float(np.mean(first_hit & second_hit))
+                            co_activation[i, j] = joint
+                            co_activation[j, i] = joint
+                            continue
+            bonus = direct_pair_bonus(first, second, "sim")
+            if bonus:
+                adjusted = float(np.clip(co_activation[i, j] + bonus, 0.0, 1.0))
+                co_activation[i, j] = adjusted
+                co_activation[j, i] = adjusted
+
+    activation = np.clip(activation, 0.02, 0.98)
+    np.fill_diagonal(co_activation, activation)
+    return activation, co_activation, pricing_details
+
+
+def leg_hit_mask(leg: Leg, away_scores: np.ndarray, home_scores: np.ndarray) -> np.ndarray | None:
+    total_scores = away_scores + home_scores
+    away_code, home_code = leg.game.split("@")
+    if leg.category == "ml":
+        side = leg.label.split()[0]
+        if side == away_code:
+            return away_scores > home_scores
+        if side == home_code:
+            return home_scores > away_scores
+        return None
+    if leg.category == "total":
+        line = direct_total_line(leg)
+        if line is None:
+            return None
+        if is_over_leg(leg):
+            return total_scores > line
+        if is_under_leg(leg):
+            return total_scores < line
+    return None
+
+
+def parse_mlb_prop_label(label: str) -> tuple[str, str, float] | None:
+    match = re.match(r"^(?P<player>.+?)\s+O\s+(?P<threshold>\d+)\s+(?P<metric>HR|H|K)$", label)
+    if not match:
+        return None
+    player = match.group("player").strip()
+    threshold = float(match.group("threshold"))
+    metric = match.group("metric")
+    stat = {"HR": "home_runs", "H": "hits", "K": "strikeouts"}[metric]
+    line = threshold - 0.5
+    return player, stat, line
+
+
+def parse_nba_prop_label(label: str) -> tuple[str, str, float] | None:
+    match = re.match(r"^(?P<player>.+?)\s+O\s+(?P<threshold>\d+)\s+(?P<metric>PTS|REB|AST)$", label)
+    if not match:
+        return None
+    player = match.group("player").strip()
+    threshold = float(match.group("threshold"))
+    metric = match.group("metric")
+    stat = {"PTS": "points", "REB": "rebounds", "AST": "assists"}[metric]
+    return player, stat, threshold - 0.5
+
+
+def calibrate_mlb_offense_factor(target_mean: float, baseline_mean: float) -> float:
+    safe_target = max(target_mean, 1.5)
+    safe_baseline = max(baseline_mean, 1.5)
+    raw_factor = safe_target / safe_baseline
+    damped_factor = raw_factor ** 0.72
+    return float(np.clip(damped_factor, 0.50, 1.35))
+
+
+def sample_mlb_score_means(
+    away,
+    home,
+    date_str: str,
+    game: str,
+    *,
+    tag: str,
+    n_simulations: int = 90,
+) -> tuple[float, float]:
+    calibrator = MLBGameSimulator(
+        MLBGameConfig(
+            n_simulations=n_simulations,
+            random_seed=abs(hash((tag, date_str, game))) % (2**32),
+        )
+    )
+    result = calibrator.simulate_game(away=away, home=home)
+    return float(np.mean(result.away_scores)), float(np.mean(result.home_scores))
+
+
+def project_nba_player_means(
+    profiles: list[dict],
+    team_total: float,
+    availability_entries: list[dict] | None = None,
+) -> dict[str, dict[str, float]]:
+    availability_entries = availability_entries or []
+    availability_by_name = {
+        str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
+        for entry in availability_entries
+        if entry.get("player_name")
+    }
+    status_minute_multiplier = {
+        "out": 0.0,
+        "doubtful": 0.20,
+        "questionable": 0.85,
+        "probable": 0.96,
+    }
+    rotation = []
+    for profile in profiles:
+        name = str(profile.get("name", "")).strip()
+        if not name:
+            continue
+        status = availability_by_name.get(name, str(profile.get("status", "active")).strip().lower())
+        minute_multiplier = status_minute_multiplier.get(status, 1.0)
+        base_minutes = max(float(profile.get("minutes", 0.0)), 8.0)
+        base_points = max(float(profile.get("points", 0.0)), 0.4)
+        base_rebounds = max(float(profile.get("rebounds", 0.0)), 0.15)
+        base_assists = max(float(profile.get("assists", 0.0)), 0.10)
+        games_sample = max(float(profile.get("games_sample", 0.0)), 1.0)
+        projected_minutes = base_minutes * minute_multiplier
+        if projected_minutes < 1.0:
+            continue
+        rotation.append(
+            {
+                "name": name,
+                "status": status,
+                "games_sample": games_sample,
+                "base_minutes": base_minutes,
+                "projected_minutes": projected_minutes,
+                "base_points": base_points,
+                "base_rebounds": base_rebounds,
+                "base_assists": base_assists,
+            }
+        )
+
+    if not rotation:
+        return {}
+
+    total_minutes = sum(player["projected_minutes"] for player in rotation)
+    minute_scale = 240.0 / max(total_minutes, 1.0)
+    for player in rotation:
+        player["projected_minutes"] = min(40.0, player["projected_minutes"] * minute_scale)
+
+    baseline_points = sum(
+        player["base_points"] * max(player["projected_minutes"], 1.0) / max(player["base_minutes"], 1.0)
+        for player in rotation
+    ) or 1.0
+    usage_scale = team_total / baseline_points
+    results: dict[str, dict[str, float]] = {}
+    for player in rotation:
+        minutes_ratio = max(player["projected_minutes"], 1.0) / max(player["base_minutes"], 1.0)
+        projected_points = max(0.5, player["base_points"] * minutes_ratio * usage_scale)
+        pace_scale = (team_total / max(NBA_BASELINE_POINTS, 1.0)) ** 0.5
+        projected_rebounds = max(0.2, player["base_rebounds"] * minutes_ratio * pace_scale)
+        projected_assists = max(0.2, player["base_assists"] * minutes_ratio * usage_scale ** 0.65)
+        results[player["name"]] = {
+            "minutes": player["projected_minutes"],
+            "points": projected_points,
+            "rebounds": projected_rebounds,
+            "assists": projected_assists,
+            "status": player["status"],
+            "games_sample": player["games_sample"],
+        }
+    return results
+
+
+def nba_stat_dispersion(
+    *,
+    stat: str,
+    mean: float,
+    minutes: float,
+    games_sample: float,
+    status: str,
+) -> float:
+    base = {"points": 0.22, "rebounds": 0.18, "assists": 0.26}.get(stat, 0.20)
+    minute_penalty = max(0.0, (26.0 - min(minutes, 26.0)) / 40.0)
+    sample_penalty = max(0.0, (6.0 - min(games_sample, 6.0)) / 10.0)
+    status_penalty = {
+        "questionable": 0.18,
+        "doubtful": 0.28,
+        "probable": 0.06,
+    }.get(status, 0.0)
+    star_penalty = 0.05 if mean >= 20.0 and stat == "points" else 0.0
+    return max(0.08, base + minute_penalty + sample_penalty + status_penalty + star_penalty)
+
+
+def sample_nba_stat_over_probability(
+    *,
+    mean: float,
+    line: float,
+    stat: str,
+    minutes: float,
+    games_sample: float,
+    status: str,
+    rng: np.random.Generator,
+    n_samples: int = 700,
+) -> float:
+    dispersion = nba_stat_dispersion(
+        stat=stat,
+        mean=mean,
+        minutes=minutes,
+        games_sample=games_sample,
+        status=status,
+    )
+    variance = mean * (1.0 + dispersion * max(mean, 1.0) / 3.0)
+    if variance <= mean + 0.05:
+        samples = rng.poisson(lam=max(mean, 0.05), size=n_samples)
+    else:
+        shape = max((mean**2) / max(variance - mean, 0.05), 0.75)
+        scale = max(mean / shape, 0.02)
+        latent_rate = rng.gamma(shape=shape, scale=scale, size=n_samples)
+        samples = rng.poisson(lam=latent_rate)
+    return float(np.mean(samples > line))
+
+
+def simulate_live_mlb_leg_probabilities(
+    game: str,
+    date_str: str,
+    game_legs: list[Leg],
+) -> dict[str, float]:
+    if team_context_from_cached_payload is None or MLBGameSimulator is None or MLBGameConfig is None:
+        return {}
+    payload = load_matchup_profile_snapshot(date_str, game)
+    if payload is None:
+        return {}
+    away, home = build_calibrated_live_mlb_contexts(date_str, game, payload)
+    simulator = MLBGameSimulator(MLBGameConfig(n_simulations=750, random_seed=abs(hash((date_str, game))) % (2**32)))
+    result = simulator.simulate_game(away=away, home=home)
+    probabilities: dict[str, float] = {}
+    for leg in game_legs:
+        parsed = parse_mlb_prop_label(leg.label)
+        if parsed is None:
+            continue
+        player_name, stat, line = parsed
+        distribution = result.player_props.get((player_name, stat))
+        if distribution is None:
+            continue
+        sim_prob = distribution.over_probabilities.get(line)
+        if sim_prob is not None:
+            probabilities[leg.label] = sim_prob
+    return probabilities
+
+
+def simulate_live_nba_leg_probabilities(
+    game: str,
+    date_str: str,
+    game_legs: list[Leg],
+) -> dict[str, float]:
+    payload = load_nba_matchup_profile_snapshot(date_str, game)
+    game_context = load_game_context_snapshot(date_str, "nba", game) or {}
+    if payload is None:
+        return {}
+    away_code, home_code = game.split("@")
+    away_mean, home_mean = expected_nba_points(away_code, home_code, load_team_form_snapshot(date_str, "nba"), game_context)
+    rng = np.random.default_rng(abs(hash(("nba-props", date_str, game))) % (2**32))
+
+    def team_probabilities(profiles: list[dict], team_total: float, side: str) -> dict[tuple[str, str], float]:
+        availability = (game_context.get("availability") or {}).get(side, [])
+        projected_means = project_nba_player_means(profiles, team_total, availability)
+        results: dict[tuple[str, str], float] = {}
+        parsed_legs = [parse_nba_prop_label(leg.label) for leg in game_legs]
+        for player_name, means in projected_means.items():
+            for parsed in parsed_legs:
+                if parsed is None:
+                    continue
+                leg_player, stat, line = parsed
+                if leg_player != player_name:
+                    continue
+                results[(player_name, stat)] = sample_nba_stat_over_probability(
+                    mean=max(float(means[stat]), 0.05),
+                    line=line,
+                    stat=stat,
+                    minutes=float(means.get("minutes", 24.0)),
+                    games_sample=float(means.get("games_sample", 4.0)),
+                    status=str(means.get("status", "active")),
+                    rng=rng,
+                )
+        return results
+
+    away_probs = team_probabilities(payload.get("away_profiles", []), away_mean, "away")
+    home_probs = team_probabilities(payload.get("home_profiles", []), home_mean, "home")
+    combined = {**away_probs, **home_probs}
+    probabilities: dict[str, float] = {}
+    for leg in game_legs:
+        parsed = parse_nba_prop_label(leg.label)
+        if parsed is None:
+            continue
+        player_name, stat, _ = parsed
+        sim_prob = combined.get((player_name, stat))
+        if sim_prob is not None:
+            probabilities[leg.label] = sim_prob
+    return probabilities
+
+
+def build_calibrated_live_mlb_contexts(
+    date_str: str,
+    game: str,
+    payload: dict | None = None,
+):
+    if team_context_from_cached_payload is None or MLBGameSimulator is None or MLBGameConfig is None:
+        raise RuntimeError("Live MLB team-context calibration dependencies are unavailable")
+    payload = payload or load_matchup_profile_snapshot(date_str, game)
+    if payload is None:
+        raise RuntimeError(f"No cached MLB matchup profile for {game} on {date_str}")
+    away_code, home_code = game.split("@")
+    away = team_context_from_cached_payload(away_code, payload.get("away_lineup", []), payload.get("away_pitcher", {}))
+    home = team_context_from_cached_payload(home_code, payload.get("home_lineup", []), payload.get("home_pitcher", {}))
+    game_context = load_game_context_snapshot(date_str, "mlb", game)
+    target_away, target_home = expected_mlb_runs(away_code, home_code, load_team_form_snapshot(date_str, "mlb"), game_context)
+    baseline_away, baseline_home = sample_mlb_score_means(away, home, date_str, game, tag="cal-base", n_simulations=120)
+    total_target = target_away + target_home
+    total_baseline = baseline_away + baseline_home
+    total_factor = calibrate_mlb_offense_factor(total_target, total_baseline)
+    away_split_factor = calibrate_mlb_offense_factor(target_away, baseline_away)
+    home_split_factor = calibrate_mlb_offense_factor(target_home, baseline_home)
+    away_factor = float(np.clip((away_split_factor * 0.65) + (total_factor * 0.35), 0.50, 1.25))
+    home_factor = float(np.clip((home_split_factor * 0.65) + (total_factor * 0.35), 0.50, 1.25))
+    away = replace(away, offense_factor=away_factor)
+    home = replace(home, offense_factor=home_factor)
+    pass1_away, pass1_home = sample_mlb_score_means(away, home, date_str, game, tag="cal-pass1")
+    pass1_total_factor = calibrate_mlb_offense_factor(total_target, pass1_away + pass1_home)
+    pass1_away_factor = calibrate_mlb_offense_factor(target_away, pass1_away)
+    pass1_home_factor = calibrate_mlb_offense_factor(target_home, pass1_home)
+    away = replace(
+        away,
+        offense_factor=float(
+            np.clip(
+                away.offense_factor * ((pass1_away_factor * 0.55) + (pass1_total_factor * 0.45)) ** 0.55,
+                0.50,
+                1.30,
+            )
+        ),
+    )
+    home = replace(
+        home,
+        offense_factor=float(
+            np.clip(
+                home.offense_factor * ((pass1_home_factor * 0.55) + (pass1_total_factor * 0.45)) ** 0.55,
+                0.50,
+                1.30,
+            )
+        ),
+    )
+    return away, home
+
+
 def direct_activation_and_coactivation(
     legs: list[Leg],
     score_source: str,
     date_str: str | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[int, dict[str, str]]]:
+    if score_source == "sim":
+        if not date_str:
+            raise ValueError("Simulation scoring requires a target date")
+        return simulation_activation_and_coactivation(legs, date_str)
+
     implied = np.array([float(leg.implied_prob) for leg in legs], dtype=np.float64)
     activation = implied.copy()
+    if score_source == "residual":
+        pricing_details = {idx: {"pricing_source": "residual", "pricing_label": "Residual model"} for idx in range(len(legs))}
+    elif score_source == "heuristic":
+        pricing_details = {idx: {"pricing_source": "heuristic", "pricing_label": "Heuristic model"} for idx in range(len(legs))}
+    else:
+        pricing_details = {idx: {"pricing_source": "market", "pricing_label": "Market implied"} for idx in range(len(legs))}
 
     if score_source == "heuristic":
         bias_bonus = -compute_biases(legs) * 0.12
@@ -1645,7 +2487,7 @@ def direct_activation_and_coactivation(
                 co_activation[j, i] = adjusted
 
     np.fill_diagonal(co_activation, activation)
-    return activation, co_activation
+    return activation, co_activation, pricing_details
 
 
 def build_filtered_parlay(
@@ -1686,9 +2528,11 @@ def build_tiered_parlays(
     legs: list[Leg],
     activation: np.ndarray,
     co_activation: np.ndarray,
+    pricing_details: dict[int, dict[str, str]] | None = None,
     cash_activation: np.ndarray | None = None,
     cash_co_activation: np.ndarray | None = None,
 ) -> list[dict]:
+    pricing_details = pricing_details or {}
     tiers = []
     for tier in TIER_DEFINITIONS:
         tier_activation = activation
@@ -1740,6 +2584,8 @@ def build_tiered_parlays(
                         "activation": float(tier_activation[idx]),
                         "implied_prob": float(legs[idx].implied_prob),
                         "score_delta": float(tier_activation[idx]) - float(legs[idx].implied_prob),
+                        "pricing_source": pricing_details.get(idx, {}).get("pricing_source", tier_score_mode),
+                        "pricing_label": pricing_details.get(idx, {}).get("pricing_label", tier_score_mode.title()),
                         "notes": legs[idx].notes,
                     }
                     for idx in parlay
@@ -1756,11 +2602,17 @@ def summarize_from_scores(
     entropy_source,
     slate_mode: str,
     loader_meta: dict,
+    pricing_details: dict[int, dict[str, str]] | None = None,
     cash_activation: np.ndarray | None = None,
     cash_co_activation: np.ndarray | None = None,
 ) -> dict:
+    pricing_details = pricing_details or {}
     n_samples = int(loader_meta.get("games", 0))
     ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
+    pricing_summary: dict[str, int] = {}
+    for idx in range(len(legs)):
+        source = pricing_details.get(idx, {}).get("pricing_source", "market")
+        pricing_summary[source] = pricing_summary.get(source, 0) + 1
 
     top_legs = []
     for rank, idx in enumerate(ranked[:12], start=1):
@@ -1772,6 +2624,10 @@ def summarize_from_scores(
                 "category": leg.category,
                 "game": leg.game,
                 "activation": float(activation[idx]),
+                "implied_prob": float(leg.implied_prob),
+                "score_delta": float(activation[idx]) - float(leg.implied_prob),
+                "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
+                "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
                 "notes": leg.notes,
             }
         )
@@ -1796,6 +2652,10 @@ def summarize_from_scores(
                         "category": legs[idx].category,
                         "game": legs[idx].game,
                         "activation": float(activation[idx]),
+                        "implied_prob": float(legs[idx].implied_prob),
+                        "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
+                        "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
+                        "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
                         "notes": legs[idx].notes,
                     }
                     for idx in parlay
@@ -1807,6 +2667,7 @@ def summarize_from_scores(
         legs,
         activation,
         co_activation,
+        pricing_details=pricing_details,
         cash_activation=cash_activation,
         cash_co_activation=cash_co_activation,
     )
@@ -1820,6 +2681,10 @@ def summarize_from_scores(
             "category": legs[best_idx].category,
             "game": legs[best_idx].game,
             "activation": float(activation[best_idx]),
+            "implied_prob": float(legs[best_idx].implied_prob),
+            "score_delta": float(activation[best_idx]) - float(legs[best_idx].implied_prob),
+            "pricing_source": pricing_details.get(best_idx, {}).get("pricing_source", "market"),
+            "pricing_label": pricing_details.get(best_idx, {}).get("pricing_label", "Market implied"),
             "notes": legs[best_idx].notes,
         }
 
@@ -1831,6 +2696,10 @@ def summarize_from_scores(
                 "category": legs[idx].category,
                 "game": legs[idx].game,
                 "activation": float(activation[idx]),
+                "implied_prob": float(legs[idx].implied_prob),
+                "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
+                "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
+                "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
                 "notes": legs[idx].notes,
             }
         )
@@ -1841,6 +2710,7 @@ def summarize_from_scores(
             "random_bytes_consumed": entropy_source.total_consumed,
             "samples_collected": n_samples,
             "slate_mode": slate_mode,
+            "pricing_summary": pricing_summary,
             **loader_meta,
         },
         "top_legs": top_legs,
@@ -2042,26 +2912,31 @@ def run_oracle(
             "Direct market scoring"
             if score_source == "implied"
             else (
-                "MLB residual market scoring (Cash tier only)"
-                if score_source == "residual"
-                else "Direct heuristic market scoring"
+                "Live matchup simulation"
+                if score_source == "sim"
+                else (
+                    "MLB residual market scoring (Cash tier only)"
+                    if score_source == "residual"
+                    else "Direct heuristic market scoring"
+                )
             )
         )
         cash_activation = None
         cash_co_activation = None
+        pricing_details = None
         if score_source == "residual":
-            cash_activation, cash_co_activation = direct_activation_and_coactivation(
+            cash_activation, cash_co_activation, _ = direct_activation_and_coactivation(
                 legs,
                 "residual",
                 date_str=date_str,
             )
-            activation, co_activation = direct_activation_and_coactivation(
+            activation, co_activation, pricing_details = direct_activation_and_coactivation(
                 legs,
                 "implied",
                 date_str=date_str,
             )
         else:
-            activation, co_activation = direct_activation_and_coactivation(
+            activation, co_activation, pricing_details = direct_activation_and_coactivation(
                 legs,
                 score_source,
                 date_str=date_str,
@@ -2073,6 +2948,7 @@ def run_oracle(
             entropy_source=entropy,
             slate_mode=resolved_slate_mode,
             loader_meta=loader_meta,
+            pricing_details=pricing_details,
             cash_activation=cash_activation,
             cash_co_activation=cash_co_activation,
         )
@@ -2140,7 +3016,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--score-source",
-        choices=["heuristic", "implied", "residual", "ising"],
+        choices=["heuristic", "implied", "residual", "sim", "ising"],
         default="implied",
         help="Scoring engine for state search",
     )
@@ -2195,6 +3071,8 @@ def main() -> None:
         print("Experimental mode: Ising energy landscape with Gibbs sampling")
     elif args.score_source == "implied":
         print("Default market mode: state search over direct implied probabilities")
+    elif args.score_source == "sim":
+        print("Simulation mode: live matchup model for MLB/NBA moneylines and totals, implied fallback for props")
     elif args.score_source == "residual":
         print("Hybrid market mode: MLB residuals for Cash tier, implied prices elsewhere")
     else:

@@ -3,6 +3,8 @@ from datetime import datetime
 
 from flask import Flask, render_template, request
 
+from data_pipeline import DEFAULT_DB_PATH
+from refresh_slate import refresh_slate
 from quantum_parlay_oracle import run_oracle
 
 
@@ -15,6 +17,7 @@ def default_form() -> dict:
         "sport": "mlb",
         "slate_mode": "auto",
         "score_source": "implied",
+        "refresh_first": True,
         "kalshi_pages": 25,
         "fallback": False,
         "samples_per_beta": 250,
@@ -29,6 +32,7 @@ def index():
     form = default_form()
     result = None
     error = None
+    refresh_result = None
 
     if request.method == "POST":
         form = {
@@ -36,6 +40,7 @@ def index():
             "sport": request.form.get("sport", form["sport"]),
             "slate_mode": request.form.get("slate_mode", form["slate_mode"]),
             "score_source": request.form.get("score_source", form["score_source"]),
+            "refresh_first": request.form.get("refresh_first") == "on",
             "kalshi_pages": int(request.form.get("kalshi_pages", form["kalshi_pages"])),
             "fallback": request.form.get("fallback") == "on",
             "samples_per_beta": int(request.form.get("samples_per_beta", form["samples_per_beta"])),
@@ -45,6 +50,13 @@ def index():
         }
 
         try:
+            if form["refresh_first"]:
+                refresh_result = refresh_slate(
+                    date_str=form["date"],
+                    sport=form["sport"],
+                    db_path=os.getenv("PARLEYDAY_DB_PATH", DEFAULT_DB_PATH),
+                    kalshi_pages=form["kalshi_pages"],
+                )
             result = run_oracle(
                 date_str=form["date"],
                 sport=form["sport"],
@@ -57,6 +69,8 @@ def index():
                 warmup=form["warmup"],
                 thin=form["thin"],
             )
+            if refresh_result is not None:
+                result["refresh"] = refresh_result
         except Exception as exc:
             error = str(exc)
 
