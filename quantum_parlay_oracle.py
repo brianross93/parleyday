@@ -1848,10 +1848,13 @@ def partial_state_score(
                 ),
                 reverse=True,
             )[: max(1, target_size - len(parlay))]
-            future_bonus = sum(
-                standalone_leg_score(legs[idx], float(activation[idx])) for idx in frontier
-            ) / len(frontier)
-            score += future_bonus * profile["future"]
+            if frontier:
+                future_bonus = sum(
+                    standalone_leg_score(legs[idx], float(activation[idx])) for idx in frontier
+                ) / len(frontier)
+                score += future_bonus * profile["future"]
+            else:
+                score -= 1.25
 
     return score
 
@@ -2812,6 +2815,26 @@ def summarize_results(
     loader_meta: dict,
 ) -> dict:
     n_samples = samples.shape[0]
+    if n_samples == 0:
+        return {
+            "summary": {
+                "target_date": loader_meta.get("target_date"),
+                "games": loader_meta.get("games", 0),
+                "recognized_legs": len(legs),
+                "samples_collected": 0,
+            },
+            "meta": {
+                "entropy_source": "No samples collected",
+                "slate_mode": slate_mode,
+                "pricing_summary": loader_meta.get("pricing_summary", {}),
+                **loader_meta,
+            },
+            "top_legs": [],
+            "parlays": [],
+            "tier_parlays": [],
+            "moonshot": None,
+            "fades": [],
+        }
     binary = (samples + 1.0) / 2.0
     activation = np.mean(binary, axis=0)
     co_activation = (binary.T @ binary) / n_samples

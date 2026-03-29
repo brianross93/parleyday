@@ -6,11 +6,13 @@ from quantum_parlay_oracle import (
     nba_stat_dispersion,
     parse_mlb_prop_label,
     parse_nba_prop_label,
+    partial_state_score,
     project_nba_player_means,
     sample_nba_stat_over_probability,
+    summarize_results,
 )
 import numpy as np
-from quantum_parlay_oracle import Leg
+from quantum_parlay_oracle import Leg, QuantumEntropySource
 
 
 class SimModelingHelperTests(unittest.TestCase):
@@ -96,6 +98,38 @@ class SimModelingHelperTests(unittest.TestCase):
             n_samples=4000,
         )
         self.assertGreater(high_vol, low_vol)
+
+    def test_partial_state_score_handles_empty_future_frontier(self) -> None:
+        legs = [Leg(0, "Team A ML", "ml", "AAA@BBB", 0.58, "notes", "mlb")]
+        activation = np.array([0.6], dtype=np.float64)
+        co_activation = np.array([[0.36]], dtype=np.float64)
+
+        score = partial_state_score(
+            parlay=[0],
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            available_sports={"mlb"},
+            target_size=2,
+        )
+
+        self.assertTrue(np.isfinite(score))
+
+    def test_summarize_results_handles_zero_samples(self) -> None:
+        legs = [Leg(0, "Team A ML", "ml", "AAA@BBB", 0.58, "notes", "mlb")]
+        samples = np.zeros((0, 1), dtype=np.float64)
+
+        result = summarize_results(
+            legs=legs,
+            samples=samples,
+            qrng=QuantumEntropySource(n_bytes=1024, fallback=True),
+            slate_mode="cached",
+            loader_meta={"target_date": "2026-03-28", "games": 1, "pricing_summary": {"market": 1}},
+        )
+
+        self.assertEqual(result["summary"]["samples_collected"], 0)
+        self.assertEqual(result["top_legs"], [])
+        self.assertEqual(result["tier_parlays"], [])
 
 
 if __name__ == "__main__":
