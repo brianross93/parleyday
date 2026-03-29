@@ -78,6 +78,7 @@ class HistoricalGame:
     home_code: str
     away_score: int
     home_score: int
+    venue_name: str = ""
 
     @property
     def matchup(self) -> str:
@@ -112,13 +113,24 @@ def sigmoid(x: float) -> float:
 
 
 def fetch_historical_schedule(target_date: str) -> list[HistoricalGame]:
-    response = requests.get(
-        MLB_SCHEDULE_URL,
-        params={"sportId": 1, "date": target_date},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    last_error = None
+    payload = None
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                MLB_SCHEDULE_URL,
+                params={"sportId": 1, "date": target_date},
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == 2:
+                raise
+    if payload is None:
+        raise RuntimeError(f"Unable to load MLB schedule for {target_date}: {last_error}")
     games = []
 
     for date_block in payload.get("dates", []):
@@ -144,6 +156,7 @@ def fetch_historical_schedule(target_date: str) -> list[HistoricalGame]:
                     home_code=home_code,
                     away_score=int(away_score),
                     home_score=int(home_score),
+                    venue_name=item.get("venue", {}).get("name", ""),
                 )
             )
     return games
@@ -569,6 +582,29 @@ def parlay_hit(parlay: list[int], outcomes: dict[int, bool]) -> bool:
     return bool(parlay) and all(outcomes[idx] for idx in parlay)
 
 
+def parlay_market_probability(parlay: list[int], legs: list[Leg]) -> float:
+    if not parlay:
+        return 0.0
+    probability = 1.0
+    for idx in parlay:
+        probability *= float(legs[idx].implied_prob)
+    return probability
+
+
+def parlay_payout_estimate(parlay: list[int], legs: list[Leg]) -> float | None:
+    implied = parlay_market_probability(parlay, legs)
+    if implied <= 0.0:
+        return None
+    return 1.0 / implied
+
+
+def parlay_profit_units(parlay: list[int], legs: list[Leg], outcomes: dict[int, bool]) -> float:
+    payout = parlay_payout_estimate(parlay, legs)
+    if payout is None:
+        return 0.0
+    return (payout - 1.0) if parlay_hit(parlay, outcomes) else -1.0
+
+
 def random_baseline(legs: list[Leg], rng: np.random.Generator, size: int) -> list[int]:
     if len(legs) <= size:
         return list(range(len(legs)))
@@ -728,6 +764,10 @@ def run_backtest(
     random_hits = {3: 0, 4: 0, 5: 0}
     implied_hits = {3: 0, 4: 0, 5: 0}
     edge_hits = {3: 0, 4: 0, 5: 0}
+    oracle_profit = {3: 0.0, 4: 0.0, 5: 0.0}
+    random_profit = {3: 0.0, 4: 0.0, 5: 0.0}
+    implied_profit = {3: 0.0, 4: 0.0, 5: 0.0}
+    edge_profit = {3: 0.0, 4: 0.0, 5: 0.0}
     oracle_legs = []
 
     for current_date in daterange(start, end):
@@ -776,10 +816,22 @@ def run_backtest(
             random_hits[size] += int(random_hit)
             implied_hits[size] += int(implied_hit)
             edge_hits[size] += int(edge_hit)
+            oracle_profit[size] += parlay_profit_units(parlay, legs, outcomes)
+            random_profit[size] += parlay_profit_units(random_parlay, legs, outcomes)
+            implied_profit[size] += parlay_profit_units(implied_parlay, legs, outcomes)
+            edge_profit[size] += parlay_profit_units(edge_parlay, legs, outcomes)
             row[f"oracle_{size}_hit"] = int(hit)
             row[f"random_{size}_hit"] = int(random_hit)
             row[f"implied_{size}_hit"] = int(implied_hit)
             row[f"edge_{size}_hit"] = int(edge_hit)
+            row[f"oracle_{size}_profit"] = oracle_profit[size]
+            row[f"random_{size}_profit"] = random_profit[size]
+            row[f"implied_{size}_profit"] = implied_profit[size]
+            row[f"edge_{size}_profit"] = edge_profit[size]
+            row[f"oracle_{size}_daily_profit"] = parlay_profit_units(parlay, legs, outcomes)
+            row[f"random_{size}_daily_profit"] = parlay_profit_units(random_parlay, legs, outcomes)
+            row[f"implied_{size}_daily_profit"] = parlay_profit_units(implied_parlay, legs, outcomes)
+            row[f"edge_{size}_daily_profit"] = parlay_profit_units(edge_parlay, legs, outcomes)
             row[f"oracle_{size}_legs"] = " | ".join(legs[idx].label for idx in parlay)
             row[f"random_{size}_legs"] = " | ".join(legs[idx].label for idx in random_parlay)
             row[f"implied_{size}_legs"] = " | ".join(legs[idx].label for idx in implied_parlay)
@@ -873,6 +925,14 @@ def run_backtest(
         "random_hits": random_hits,
         "implied_hits": implied_hits,
         "edge_hits": edge_hits,
+        "oracle_profit_units": oracle_profit,
+        "random_profit_units": random_profit,
+        "implied_profit_units": implied_profit,
+        "edge_profit_units": edge_profit,
+        "oracle_roi": {size: (oracle_profit[size] / max(len(daily_rows), 1)) for size in oracle_profit},
+        "random_roi": {size: (random_profit[size] / max(len(daily_rows), 1)) for size in random_profit},
+        "implied_roi": {size: (implied_profit[size] / max(len(daily_rows), 1)) for size in implied_profit},
+        "edge_roi": {size: (edge_profit[size] / max(len(daily_rows), 1)) for size in edge_profit},
         "oracle_leg_hit_rate": leg_hit_rate,
         "oracle_avg_activation": avg_activation,
         "oracle_avg_implied_prob": avg_implied,

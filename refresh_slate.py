@@ -15,6 +15,7 @@ from data_pipeline import (
 )
 from quantum_parlay_oracle import (
     canonical_team_code,
+    clean_market_team_label,
     fetch_live_mlb_team_form,
     fetch_live_nba_team_form,
     load_live_legs,
@@ -359,8 +360,12 @@ def fetch_nba_game_contexts(date_str: str) -> list[dict[str, Any]]:
         competitors = competition.get("competitors", [])
         away = next((team for team in competitors if team.get("homeAway") == "away"), {})
         home = next((team for team in competitors if team.get("homeAway") == "home"), {})
-        away_code = away.get("team", {}).get("abbreviation", "")
-        home_code = home.get("team", {}).get("abbreviation", "")
+        away_team = away.get("team", {})
+        home_team = home.get("team", {})
+        away_team_name = away_team.get("displayName", "")
+        home_team_name = home_team.get("displayName", "")
+        away_code = canonical_team_code(away_team_name) or clean_market_team_label(away_team.get("abbreviation", ""))
+        home_code = canonical_team_code(home_team_name) or clean_market_team_label(home_team.get("abbreviation", ""))
         if not away_code or not home_code:
             continue
         contexts.append(
@@ -372,8 +377,8 @@ def fetch_nba_game_contexts(date_str: str) -> list[dict[str, Any]]:
                 "venue": competition.get("venue", {}),
                 "away_team_id": away.get("team", {}).get("id"),
                 "home_team_id": home.get("team", {}).get("id"),
-                "away_team_name": away.get("team", {}).get("displayName", away_code),
-                "home_team_name": home.get("team", {}).get("displayName", home_code),
+                "away_team_name": away_team_name or away_code,
+                "home_team_name": home_team_name or home_code,
                 "availability": {
                     "source": "pending_external_feed",
                     "away": [],

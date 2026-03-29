@@ -38,7 +38,7 @@ class MLBContextAdjustmentTests(unittest.TestCase):
         adj_away, adj_home = expected_mlb_runs("NYY", "BOS", team_form, context)
 
         self.assertGreater(adj_home, base_home)
-        self.assertEqual(adj_away, base_away)
+        self.assertGreaterEqual(adj_away, base_away)
 
 
 if __name__ == "__main__":

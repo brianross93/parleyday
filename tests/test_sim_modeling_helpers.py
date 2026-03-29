@@ -2,6 +2,7 @@ import unittest
 
 from quantum_parlay_oracle import (
     calibrate_mlb_offense_factor,
+    leg_moneyline_side,
     nba_stat_dispersion,
     parse_mlb_prop_label,
     parse_nba_prop_label,
@@ -9,6 +10,7 @@ from quantum_parlay_oracle import (
     sample_nba_stat_over_probability,
 )
 import numpy as np
+from quantum_parlay_oracle import Leg
 
 
 class SimModelingHelperTests(unittest.TestCase):
@@ -17,6 +19,16 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(parse_mlb_prop_label("Paul Skenes O 8 K"), ("Paul Skenes", "strikeouts", 7.5))
         self.assertEqual(parse_nba_prop_label("Jayson Tatum O 27 PTS"), ("Jayson Tatum", "points", 26.5))
         self.assertEqual(parse_nba_prop_label("Nikola Jokic O 11 REB"), ("Nikola Jokic", "rebounds", 10.5))
+
+    def test_moneyline_side_matches_full_team_labels(self) -> None:
+        self.assertEqual(
+            leg_moneyline_side(Leg(0, "Chicago ML", "ml", "CHI@MEM", 0.63, "Chicago Bulls at Memphis Grizzlies", "nba")),
+            "CHI",
+        )
+        self.assertEqual(
+            leg_moneyline_side(Leg(1, "Phoenix ML", "ml", "UTA@PHX", 0.92, "Utah Jazz at Phoenix Suns", "nba")),
+            "PHX",
+        )
 
     def test_calibrate_mlb_offense_factor_is_damped_and_clipped(self) -> None:
         self.assertAlmostEqual(calibrate_mlb_offense_factor(4.5, 4.5), 1.0)

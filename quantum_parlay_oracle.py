@@ -25,6 +25,11 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     SnapshotStore = None
 
 try:
+    from data_pipeline.mlb_park_factors import venue_park_factors
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    venue_park_factors = None
+
+try:
     from data_pipeline.mlb_profiles import team_context_from_cached_payload
 except ImportError:  # pragma: no cover - optional dependency at runtime
     team_context_from_cached_payload = None
@@ -48,6 +53,14 @@ EASTERN_TZ = ZoneInfo("America/New_York")
 LEAGUE_AVG_RUNS = 4.5
 NBA_BASELINE_POINTS = 112.0
 NBA_HOME_COURT_POINTS = 2.5
+MLB_RUN_ENV_FACTOR = 0.975
+MLB_SIDE_CONFIDENCE_FACTOR = 0.76
+MLB_HOME_EDGE_ADJUSTMENT = 0.22
+MLB_WIN_DELTA_FACTOR = 0.84
+MLB_HOME_SIDE_SHIFT = 0.12
+MLB_PARK_FACTOR_BLEND = 0.55
+NBA_TOTAL_UPLIFT = 0.75
+NBA_SIDE_CONFIDENCE_FACTOR = 1.03
 SIMULATION_RUNS = 4000
 DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS = 36.0
 DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS = 6.0
@@ -1066,6 +1079,13 @@ def expected_mlb_runs(
     away_mean += 0.35 * away_recent - 0.20 * home_recent
     home_mean += 0.35 * home_recent - 0.20 * away_recent + 0.15
     if game_context:
+        venue_name = (game_context.get("venue") or {}).get("name")
+        if venue_park_factors is not None:
+            park = venue_park_factors(venue_name, int(str((game_context.get("game_time") or "2025"))[:4] or 2025))
+            run_factor = 1.0 + ((float(park.get("run_factor", 1.0)) - 1.0) * MLB_PARK_FACTOR_BLEND)
+            away_mean *= run_factor
+            home_mean *= run_factor
+    if game_context:
         weather = game_context.get("weather") or {}
         temperature_f = weather.get("temperature_f")
         wind_speed_mph = weather.get("wind_speed_mph")
@@ -1111,6 +1131,16 @@ def expected_mlb_runs(
             home_mean += 0.45
         if home_pitcher and home_pitcher_unavailable:
             away_mean += 0.45
+    away_mean = LEAGUE_AVG_RUNS + ((away_mean - LEAGUE_AVG_RUNS) * MLB_SIDE_CONFIDENCE_FACTOR)
+    home_mean = LEAGUE_AVG_RUNS + ((home_mean - LEAGUE_AVG_RUNS) * MLB_SIDE_CONFIDENCE_FACTOR)
+    away_mean -= MLB_HOME_EDGE_ADJUSTMENT / 2.0
+    home_mean += MLB_HOME_EDGE_ADJUSTMENT / 2.0
+    away_mean *= MLB_RUN_ENV_FACTOR
+    home_mean *= MLB_RUN_ENV_FACTOR
+    midpoint = (away_mean + home_mean) / 2.0
+    delta = ((away_mean - home_mean) / 2.0) * MLB_WIN_DELTA_FACTOR
+    away_mean = midpoint + delta - (MLB_HOME_SIDE_SHIFT / 2.0)
+    home_mean = midpoint - delta + (MLB_HOME_SIDE_SHIFT / 2.0)
     return max(2.5, away_mean), max(2.5, home_mean)
 
 
@@ -1153,6 +1183,10 @@ def expected_nba_points(
             away_mean = (away_mean * 0.7) + (NBA_BASELINE_POINTS * 0.3)
         if not availability.get("home_submitted", True):
             home_mean = (home_mean * 0.7) + (NBA_BASELINE_POINTS * 0.3)
+    midpoint = (away_mean + home_mean) / 2.0
+    delta = ((away_mean - home_mean) / 2.0) * NBA_SIDE_CONFIDENCE_FACTOR
+    away_mean = midpoint + delta + NBA_TOTAL_UPLIFT
+    home_mean = midpoint - delta + NBA_TOTAL_UPLIFT
     return float(np.clip(away_mean, 96.0, 132.0)), float(np.clip(home_mean, 96.0, 132.0))
 
 
@@ -2015,7 +2049,7 @@ def simulated_leg_probability(
     away_code, home_code = leg.game.split("@")
 
     if leg.category == "ml":
-        side = leg.label.split()[0]
+        side = leg_moneyline_side(leg)
         if side == away_code:
             return float(np.mean(away_scores > home_scores))
         if side == home_code:
@@ -2117,7 +2151,7 @@ def leg_hit_mask(leg: Leg, away_scores: np.ndarray, home_scores: np.ndarray) -> 
     total_scores = away_scores + home_scores
     away_code, home_code = leg.game.split("@")
     if leg.category == "ml":
-        side = leg.label.split()[0]
+        side = leg_moneyline_side(leg)
         if side == away_code:
             return away_scores > home_scores
         if side == home_code:
@@ -2156,6 +2190,39 @@ def parse_nba_prop_label(label: str) -> tuple[str, str, float] | None:
     stat = {"PTS": "points", "REB": "rebounds", "AST": "assists"}[metric]
     return player, stat, threshold - 0.5
 
+
+def leg_moneyline_side(leg: Leg) -> str | None:
+    if leg.category != "ml":
+        return None
+    away_code, home_code = leg.game.split("@")
+    team_label = leg.label.removesuffix(" ML").strip()
+    compact_label = compact_token(team_label)
+    candidates = (
+        (away_code, TEAM_CODES.get(team_name_from_code(away_code), [])),
+        (home_code, TEAM_CODES.get(team_name_from_code(home_code), [])),
+    )
+    for code, aliases in candidates:
+        alias_pool = {compact_token(code)}
+        alias_pool.update(compact_token(alias) for alias in aliases)
+        full_name = team_name_from_code(code)
+        if full_name:
+            alias_pool.add(compact_token(full_name))
+            city_alias = " ".join(full_name.split()[:-1]).strip()
+            if city_alias:
+                alias_pool.add(compact_token(city_alias))
+            alias_pool.update(compact_token(part) for part in full_name.split())
+        if compact_label in alias_pool:
+            return code
+    return None
+
+
+def team_name_from_code(code: str) -> str:
+    if code in NBA_CODE_TO_NAME:
+        return NBA_CODE_TO_NAME[code]
+    for full_name, aliases in TEAM_CODES.items():
+        if code in aliases:
+            return full_name
+    return ""
 
 def calibrate_mlb_offense_factor(target_mean: float, baseline_mean: float) -> float:
     safe_target = max(target_mean, 1.5)
@@ -2352,6 +2419,11 @@ def simulate_live_nba_leg_probabilities(
 
     def team_probabilities(profiles: list[dict], team_total: float, side: str) -> dict[tuple[str, str], float]:
         availability = (game_context.get("availability") or {}).get(side, [])
+        availability_by_name = {
+            str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
+            for entry in availability
+            if entry.get("player_name")
+        }
         projected_means = project_nba_player_means(profiles, team_total, availability)
         results: dict[tuple[str, str], float] = {}
         parsed_legs = [parse_nba_prop_label(leg.label) for leg in game_legs]
@@ -2371,6 +2443,17 @@ def simulate_live_nba_leg_probabilities(
                     status=str(means.get("status", "active")),
                     rng=rng,
                 )
+        for parsed in parsed_legs:
+            if parsed is None:
+                continue
+            player_name, stat, _ = parsed
+            if (player_name, stat) in results:
+                continue
+            status = availability_by_name.get(player_name, "")
+            if status == "out":
+                results[(player_name, stat)] = 0.0
+            elif status == "doubtful":
+                results[(player_name, stat)] = 0.05
         return results
 
     away_probs = team_probabilities(payload.get("away_profiles", []), away_mean, "away")
