@@ -36,6 +36,7 @@ Core files:
 - [refresh_slate.py](/Users/brianross/Desktop/parleyday/refresh_slate.py): same-day refresh for volatile inputs and recognized legs
 - [daily_ingest.py](/Users/brianross/Desktop/parleyday/daily_ingest.py): baseline cache refresh
 - [monte_carlo/mlb.py](/Users/brianross/Desktop/parleyday/monte_carlo/mlb.py): MLB plate-appearance Monte Carlo engine
+- [monte_carlo/nba.py](/Users/brianross/Desktop/parleyday/monte_carlo/nba.py): NBA possession Monte Carlo engine
 - [data_pipeline/cache.py](/Users/brianross/Desktop/parleyday/data_pipeline/cache.py): SQLite snapshot store
 - [data_pipeline/mlb_profiles.py](/Users/brianross/Desktop/parleyday/data_pipeline/mlb_profiles.py): live MLB player and matchup profiles
 - [data_pipeline/nba_profiles.py](/Users/brianross/Desktop/parleyday/data_pipeline/nba_profiles.py): NBA player stat profiles
@@ -205,24 +206,46 @@ This is deliberate:
 
 ### NBA game and player model
 
-The NBA path is lighter than the MLB plate-appearance engine, but still simulation-backed for supported markets.
+The NBA path now has a real possession-by-possession Monte Carlo engine in [monte_carlo/nba.py](/Users/brianross/Desktop/parleyday/monte_carlo/nba.py).
 
-The current NBA model uses:
+At a high level:
 
-- team-level expected points
-- live availability penalties
-- recent player stat profiles
+- the app first estimates team scoring environment with `expected_nba_points()`
+- player profiles are projected into a live rotation with minute and usage redistribution
+- the simulator rolls possessions, not just final scores
+- each possession can resolve as:
+  - turnover
+  - free-throw trip
+  - 2-point attempt
+  - 3-point attempt
+  - offensive rebound continuation
+  - defensive rebound ending the possession
+- scoring, rebounds, and assists are attributed to players directly from the possession flow
+
+The current NBA live path uses:
+
+- team-form snapshots
+- home-court adjustment
+- official injury availability context
+- recent player stat profiles from [data_pipeline/nba_profiles.py](/Users/brianross/Desktop/parleyday/data_pipeline/nba_profiles.py)
 - projected minute redistribution
-- usage redistribution when players are out
-- overdispersed stat sampling for `PTS`, `REB`, and `AST`
+- possession-level event rolls for supported props
 
 Relevant functions:
 
 - [quantum_parlay_oracle.py](/Users/brianross/Desktop/parleyday/quantum_parlay_oracle.py) `expected_nba_points()`
 - [quantum_parlay_oracle.py](/Users/brianross/Desktop/parleyday/quantum_parlay_oracle.py) `project_nba_player_means()`
+- [quantum_parlay_oracle.py](/Users/brianross/Desktop/parleyday/quantum_parlay_oracle.py) `build_live_nba_team_context()`
 - [quantum_parlay_oracle.py](/Users/brianross/Desktop/parleyday/quantum_parlay_oracle.py) `simulate_live_nba_leg_probabilities()`
+- [monte_carlo/nba.py](/Users/brianross/Desktop/parleyday/monte_carlo/nba.py) `NBAGameSimulator`
 
-This is an MVP player-stat engine, not yet a full possession-by-possession simulator.
+Today that simulator supports:
+
+- NBA moneylines
+- NBA totals
+- NBA `PTS`, `REB`, and `AST` props
+
+It is still an MVP in the sense that rotations are profile-based rather than driven by a full historical substitution model, but it is no longer just a direct stat sampler.
 
 ## Score Modes
 
@@ -385,7 +408,7 @@ This is an internal tool, not a finished commercial betting platform.
 Current limitations:
 
 - MLB player props depend heavily on lineup availability
-- NBA player model is still an MVP, not a full possession engine
+- NBA player model is still an MVP rotation model, even though pricing now runs through a possession engine
 - some edges can still be false positives due to market parsing or sparse inputs
 - historical profitability is not fully known without archived odds
 - trust score is heuristic, not fully statistical

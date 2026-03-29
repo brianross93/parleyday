@@ -41,12 +41,21 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     MLBGameConfig = None
     MLBGameSimulator = None
 
+try:
+    from monte_carlo.nba import NBAGameConfig, NBAGameSimulator, NBAPlayerProfile, NBATeamContext
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    NBAGameConfig = None
+    NBAGameSimulator = None
+    NBAPlayerProfile = None
+    NBATeamContext = None
+
 
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 MLB_STANDINGS_URL = "https://statsapi.mlb.com/api/v1/standings"
 MLB_TEAMS_URL = "https://statsapi.mlb.com/api/v1/teams"
 NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+ESPN_NBA_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 DEFAULT_BETAS = [0.8, 1.0, 1.2, 1.5, 2.0]
 DATE_CODE_RE = re.compile(r"-(\d{2}[A-Z]{3}\d{2})(\d{4})?([A-Z0-9]+)?$")
 TEAM_WORD_RE = re.compile(r"[^a-z0-9]+")
@@ -563,38 +572,74 @@ def fetch_nba_schedule(date_str: str) -> list[GameInfo]:
     if requests is None:
         raise RuntimeError("Live NBA loading requires requests")
 
+    games = []
+    try:
+        response = requests.get(ESPN_NBA_SCOREBOARD_URL, params={"dates": date_str.replace("-", "")}, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        for event in payload.get("events", []):
+            competition = event.get("competitions", [{}])[0]
+            competitors = competition.get("competitors", [])
+            away = next((team for team in competitors if team.get("homeAway") == "away"), {})
+            home = next((team for team in competitors if team.get("homeAway") == "home"), {})
+            away_team = away.get("team", {})
+            home_team = home.get("team", {})
+            away_name = away_team.get("displayName", "")
+            home_name = home_team.get("displayName", "")
+            if not away_name or not home_name:
+                continue
+            games.append(
+                GameInfo(
+                    sport="nba",
+                    game_pk=int(event.get("id", 0)),
+                    date=date_str,
+                    game_time=competition.get("date", f"{date_str}T00:00:00Z"),
+                    game_state=event.get("status", {}).get("type", {}).get("description")
+                    or event.get("status", {}).get("type", {}).get("detail")
+                    or "",
+                    away_name=away_name,
+                    home_name=home_name,
+                    away_code=compact_token(away_team.get("abbreviation", canonical_team_code(away_name))),
+                    home_code=compact_token(home_team.get("abbreviation", canonical_team_code(home_name))),
+                    away_detail=f"{away.get('records', [{}])[0].get('summary', away.get('record', 'TBD'))}",
+                    home_detail=f"{home.get('records', [{}])[0].get('summary', home.get('record', 'TBD'))}",
+                )
+            )
+        if games:
+            return games
+    except Exception:
+        games = []
+
     response = requests.get(NBA_SCOREBOARD_URL, timeout=20)
     response.raise_for_status()
     payload = response.json()
     board = payload.get("scoreboard", {})
-
-    if board.get("gameDate") != date_str:
-        return fetch_nba_schedule_from_kalshi(date_str)
-
-    games = []
-    for item in board.get("games", []):
-        away = item.get("awayTeam", {})
-        home = item.get("homeTeam", {})
-        away_name = f"{away.get('teamCity', '').strip()} {away.get('teamName', '').strip()}".strip()
-        home_name = f"{home.get('teamCity', '').strip()} {home.get('teamName', '').strip()}".strip()
-        if not away_name or not home_name:
-            continue
-        games.append(
-            GameInfo(
-                sport="nba",
-                game_pk=int(item.get("gameId", 0)),
-                date=board.get("gameDate", date_str),
-                game_time=item.get("gameTimeUTC", ""),
-                game_state=item.get("gameStatusText", ""),
-                away_name=away_name,
-                home_name=home_name,
-                away_code=compact_token(away.get("teamTricode", canonical_team_code(away_name))),
-                home_code=compact_token(home.get("teamTricode", canonical_team_code(home_name))),
-                away_detail=f"{away.get('wins', 0)}-{away.get('losses', 0)}",
-                home_detail=f"{home.get('wins', 0)}-{home.get('losses', 0)}",
+    if board.get("gameDate") == date_str:
+        for item in board.get("games", []):
+            away = item.get("awayTeam", {})
+            home = item.get("homeTeam", {})
+            away_name = f"{away.get('teamCity', '').strip()} {away.get('teamName', '').strip()}".strip()
+            home_name = f"{home.get('teamCity', '').strip()} {home.get('teamName', '').strip()}".strip()
+            if not away_name or not home_name:
+                continue
+            games.append(
+                GameInfo(
+                    sport="nba",
+                    game_pk=int(item.get("gameId", 0)),
+                    date=board.get("gameDate", date_str),
+                    game_time=item.get("gameTimeUTC", ""),
+                    game_state=item.get("gameStatusText", ""),
+                    away_name=away_name,
+                    home_name=home_name,
+                    away_code=compact_token(away.get("teamTricode", canonical_team_code(away_name))),
+                    home_code=compact_token(home.get("teamTricode", canonical_team_code(home_name))),
+                    away_detail=f"{away.get('wins', 0)}-{away.get('losses', 0)}",
+                    home_detail=f"{home.get('wins', 0)}-{home.get('losses', 0)}",
+                )
             )
-        )
-    return games
+    if games:
+        return games
+    return fetch_nba_schedule_from_kalshi(date_str)
 
 
 def fetch_nba_schedule_from_kalshi(date_str: str) -> list[GameInfo]:
@@ -910,6 +955,19 @@ def fetch_live_nba_team_form(date_str: str) -> dict[str, dict]:
     return team_form
 
 
+def nba_team_form_is_usable(team_form: dict[str, dict] | None) -> bool:
+    if not team_form:
+        return False
+    games_played = [int(item.get("games_played", 0)) for item in team_form.values() if isinstance(item, dict)]
+    if not games_played:
+        return False
+    if max(games_played) <= 1:
+        return False
+    if sum(games_played) / len(games_played) < 10:
+        return False
+    return True
+
+
 def load_team_form_snapshot(date_str: str, sport: str) -> dict[str, dict]:
     if sport == "mlb":
         cached = load_cached_payload(
@@ -943,7 +1001,7 @@ def load_team_form_snapshot(date_str: str, sport: str) -> dict[str, dict]:
             as_of_date=date_str,
             max_age_hours=DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS,
         )
-        if cached is not None:
+        if nba_team_form_is_usable(cached):
             return cached
         payload = fetch_live_nba_team_form(date_str)
         store_cached_payload(
@@ -1220,6 +1278,30 @@ def simulate_game_distributions(
         team_form = load_team_form_snapshot(date_str, "nba")
         game_context = load_game_context_snapshot(date_str, "nba", f"{away_code}@{home_code}")
         away_mean, home_mean = expected_nba_points(away_code, home_code, team_form, game_context)
+        payload = load_nba_matchup_profile_snapshot(date_str, f"{away_code}@{home_code}")
+        if payload is not None and NBAGameSimulator is not None and NBAGameConfig is not None:
+            availability = (game_context or {}).get("availability") or {}
+            away_context = build_live_nba_team_context(
+                away_code,
+                payload.get("away_profiles", []),
+                away_mean,
+                availability.get("away", []),
+            )
+            home_context = build_live_nba_team_context(
+                home_code,
+                payload.get("home_profiles", []),
+                home_mean,
+                availability.get("home", []),
+            )
+            if away_context is not None and home_context is not None:
+                simulator = NBAGameSimulator(
+                    NBAGameConfig(
+                        n_simulations=min(n_sims, 1200),
+                        random_seed=abs(hash(("nba-game", away_code, home_code, date_str))) % (2**32),
+                    )
+                )
+                result = simulator.simulate_game(away=away_context, home=home_context)
+                return result.away_scores, result.home_scores
         away_scores = np.rint(rng.normal(loc=away_mean, scale=11.5, size=n_sims)).astype(np.int16)
         home_scores = np.rint(rng.normal(loc=home_mean, scale=11.0, size=n_sims)).astype(np.int16)
         away_scores = np.clip(away_scores, 75, 170)
@@ -2050,6 +2132,7 @@ TIER_DEFINITIONS = [
         "target_payout_max": 3.0,
         "min_edge": 0.015,
         "min_trust": 0.55,
+        "max_same_game_legs": 1,
         "bankroll_hint": "50%",
         "description": "High-probability grinder built to cash regularly.",
     },
@@ -2063,6 +2146,7 @@ TIER_DEFINITIONS = [
         "target_payout_max": 15.0,
         "min_edge": 0.03,
         "min_trust": 0.45,
+        "max_same_game_legs": 1,
         "bankroll_hint": "30%",
         "description": "Mid-range state-search ticket where combination fit matters most.",
     },
@@ -2076,6 +2160,7 @@ TIER_DEFINITIONS = [
         "target_payout_max": 100.0,
         "min_edge": 0.04,
         "min_trust": 0.35,
+        "max_same_game_legs": 2,
         "bankroll_hint": "20%",
         "description": "Asymmetric upside ticket built from lower-probability legs.",
     },
@@ -2427,6 +2512,40 @@ def project_nba_player_means(
     return results
 
 
+def build_live_nba_team_context(
+    team_code: str,
+    profiles: list[dict],
+    team_total: float,
+    availability_entries: list[dict] | None = None,
+):
+    if NBATeamContext is None or NBAPlayerProfile is None:
+        return None
+    projected_means = project_nba_player_means(profiles, team_total=team_total, availability_entries=availability_entries)
+    if not projected_means:
+        return None
+    profile_lookup = {
+        str(profile.get("name", "")).strip(): profile
+        for profile in profiles
+        if profile.get("name")
+    }
+    players = []
+    for player_name, means in projected_means.items():
+        source_profile = profile_lookup.get(player_name, {})
+        players.append(
+            NBAPlayerProfile(
+                name=player_name,
+                minutes=float(means.get("minutes", source_profile.get("minutes", 18.0))),
+                points=float(means.get("points", source_profile.get("points", 6.0))),
+                rebounds=float(means.get("rebounds", source_profile.get("rebounds", 2.5))),
+                assists=float(means.get("assists", source_profile.get("assists", 1.5))),
+                status=str(means.get("status", source_profile.get("status", "active"))),
+                games_sample=float(means.get("games_sample", source_profile.get("games_sample", 1.0))),
+                position=source_profile.get("position"),
+            )
+        )
+    return NBATeamContext(code=team_code, players=players, expected_points=float(team_total))
+
+
 def nba_stat_dispersion(
     *,
     stat: str,
@@ -2515,63 +2634,75 @@ def simulate_live_nba_leg_probabilities(
 ) -> dict[str, float]:
     payload = load_nba_matchup_profile_snapshot(date_str, game)
     game_context = load_game_context_snapshot(date_str, "nba", game) or {}
-    if payload is None:
+    if payload is None or NBAGameSimulator is None or NBAGameConfig is None:
         return {}
     away_code, home_code = game.split("@")
     away_mean, home_mean = expected_nba_points(away_code, home_code, load_team_form_snapshot(date_str, "nba"), game_context)
-    rng = np.random.default_rng(abs(hash(("nba-props", date_str, game))) % (2**32))
+    availability = game_context.get("availability") or {}
+    away_context = build_live_nba_team_context(
+        away_code,
+        payload.get("away_profiles", []),
+        away_mean,
+        availability.get("away", []),
+    )
+    home_context = build_live_nba_team_context(
+        home_code,
+        payload.get("home_profiles", []),
+        home_mean,
+        availability.get("home", []),
+    )
+    if away_context is None or home_context is None:
+        return {}
 
-    def team_probabilities(profiles: list[dict], team_total: float, side: str) -> dict[tuple[str, str], float]:
-        availability = (game_context.get("availability") or {}).get(side, [])
-        availability_by_name = {
-            str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
-            for entry in availability
-            if entry.get("player_name")
-        }
-        projected_means = project_nba_player_means(profiles, team_total, availability)
-        results: dict[tuple[str, str], float] = {}
-        parsed_legs = [parse_nba_prop_label(leg.label) for leg in game_legs]
-        for player_name, means in projected_means.items():
-            for parsed in parsed_legs:
-                if parsed is None:
-                    continue
-                leg_player, stat, line = parsed
-                if leg_player != player_name:
-                    continue
-                results[(player_name, stat)] = sample_nba_stat_over_probability(
-                    mean=max(float(means[stat]), 0.05),
-                    line=line,
-                    stat=stat,
-                    minutes=float(means.get("minutes", 24.0)),
-                    games_sample=float(means.get("games_sample", 4.0)),
-                    status=str(means.get("status", "active")),
-                    rng=rng,
-                )
-        for parsed in parsed_legs:
-            if parsed is None:
-                continue
-            player_name, stat, _ = parsed
-            if (player_name, stat) in results:
-                continue
-            status = availability_by_name.get(player_name, "")
-            if status == "out":
-                results[(player_name, stat)] = 0.0
-            elif status == "doubtful":
-                results[(player_name, stat)] = 0.05
-        return results
-
-    away_probs = team_probabilities(payload.get("away_profiles", []), away_mean, "away")
-    home_probs = team_probabilities(payload.get("home_profiles", []), home_mean, "home")
-    combined = {**away_probs, **home_probs}
-    probabilities: dict[str, float] = {}
+    tracked_props: set[tuple[str, str]] = set()
+    out_overrides: dict[tuple[str, str], float] = {}
+    doubtful_overrides: dict[tuple[str, str], float] = {}
+    available_names = {player.name for player in away_context.players} | {player.name for player in home_context.players}
+    status_lookup = {
+        str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
+        for side in ("away", "home")
+        for entry in availability.get(side, [])
+        if entry.get("player_name")
+    }
     for leg in game_legs:
         parsed = parse_nba_prop_label(leg.label)
         if parsed is None:
             continue
         player_name, stat, _ = parsed
-        sim_prob = combined.get((player_name, stat))
-        if sim_prob is not None:
-            probabilities[leg.label] = sim_prob
+        if player_name not in available_names and player_name not in status_lookup:
+            continue
+        tracked_props.add((player_name, stat))
+        status = status_lookup.get(player_name, "")
+        if status == "out":
+            out_overrides[(player_name, stat)] = 0.0
+        elif status == "doubtful":
+            doubtful_overrides[(player_name, stat)] = 0.05
+
+    simulator = NBAGameSimulator(
+        NBAGameConfig(
+            n_simulations=850,
+            random_seed=abs(hash(("nba-props", date_str, game))) % (2**32),
+        )
+    )
+    result = simulator.simulate_game(away=away_context, home=home_context, tracked_props=tracked_props)
+    probabilities: dict[str, float] = {}
+    for leg in game_legs:
+        parsed = parse_nba_prop_label(leg.label)
+        if parsed is None:
+            continue
+        player_name, stat, line = parsed
+        override = out_overrides.get((player_name, stat))
+        if override is not None:
+            probabilities[leg.label] = override
+            continue
+        override = doubtful_overrides.get((player_name, stat))
+        if override is not None:
+            probabilities[leg.label] = override
+            continue
+        distribution = result.player_props.get((player_name, stat))
+        if distribution is None:
+            continue
+        probabilities[leg.label] = float(np.mean(distribution.samples > line))
     return probabilities
 
 
@@ -2769,6 +2900,11 @@ def build_tiered_parlays(
                 parlay_list = list(parlay)
                 if any(incompatible_pair(legs[a], legs[b]) for a, b in combinations(parlay_list, 2)):
                     continue
+                game_counts: dict[str, int] = {}
+                for idx in parlay_list:
+                    game_counts[legs[idx].game] = game_counts.get(legs[idx].game, 0) + 1
+                if max(game_counts.values(), default=0) > tier.get("max_same_game_legs", tier["size"]):
+                    continue
                 payout_estimate = market_parlay_payout_estimate(parlay_list, legs)
                 if payout_estimate is None:
                     continue
@@ -2798,6 +2934,10 @@ def build_tiered_parlays(
                 avg_edge = float(
                     np.mean([float(tier_activation[idx]) - float(legs[idx].implied_prob) for idx in parlay_list])
                 )
+                same_game_penalty = 0.0
+                for count in game_counts.values():
+                    if count > 1:
+                        same_game_penalty += (count - 1) * 0.85
                 score = (
                     partial_state_score(
                         parlay=parlay_list,
@@ -2811,6 +2951,7 @@ def build_tiered_parlays(
                     + (avg_trust * 1.5)
                     + ((model_prob - market_prob) * 8.0)
                     - (payout_miss * 0.6)
+                    - same_game_penalty
                 )
                 if best_variant is None or score > best_variant[1]:
                     best_variant = (parlay_list, score, payout_estimate)
@@ -3438,7 +3579,7 @@ def main() -> None:
     elif args.score_source == "implied":
         print("Default market mode: state search over direct implied probabilities")
     elif args.score_source == "sim":
-        print("Simulation mode: live matchup model for MLB/NBA moneylines and totals, implied fallback for props")
+        print("Simulation mode: live matchup model for MLB/NBA moneylines, totals, and supported player props")
     elif args.score_source == "residual":
         print("Hybrid market mode: MLB residuals for Cash tier, implied prices elsewhere")
     else:

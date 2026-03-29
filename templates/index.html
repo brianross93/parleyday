@@ -305,7 +305,7 @@
               </label>
               <label>
                 <span class="label-title">Scoring Engine</span>
-                <span class="help">Use direct market probabilities by default, or switch to the live matchup simulator for MLB/NBA moneylines and totals.</span>
+                <span class="help">Use direct market probabilities by default, or switch to the live matchup simulator for MLB/NBA moneylines, totals, and supported player props.</span>
                 <select name="score_source">
                   <option value="implied" {% if form.score_source == "implied" %}selected{% endif %}>Pure market implied (Recommended)</option>
                   <option value="sim" {% if form.score_source == "sim" %}selected{% endif %}>Live matchup simulator</option>

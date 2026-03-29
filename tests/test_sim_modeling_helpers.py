@@ -1,10 +1,14 @@
 import unittest
 
+from monte_carlo.nba import NBAGameConfig, NBAGameSimulator, NBAPlayerProfile, NBATeamContext
 from quantum_parlay_oracle import (
+    build_live_nba_team_context,
     build_tiered_parlays,
     calibrate_mlb_offense_factor,
     direct_activation_and_coactivation,
+    fetch_live_nba_team_form,
     leg_moneyline_side,
+    nba_team_form_is_usable,
     nba_stat_dispersion,
     parse_mlb_prop_label,
     parse_nba_prop_label,
@@ -13,6 +17,7 @@ from quantum_parlay_oracle import (
     run_oracle,
     sample_nba_stat_over_probability,
     simulate_live_mlb_leg_probabilities,
+    simulate_live_nba_leg_probabilities,
     structured_threshold_label,
     summarize_from_scores,
     summarize_results,
@@ -73,6 +78,79 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertGreater(with_star_out["Starter Wing"]["points"], healthy["Starter Wing"]["points"])
         self.assertGreater(with_star_out["Bench Guard"]["minutes"], healthy["Bench Guard"]["minutes"])
         self.assertLessEqual(sum(player["minutes"] for player in with_star_out.values()), 240.0 + 1e-6)
+
+    def test_build_live_nba_team_context_uses_projected_minutes(self) -> None:
+        context = build_live_nba_team_context(
+            "MIL",
+            [
+                {"name": "Guard One", "minutes": 34.0, "points": 24.0, "rebounds": 5.0, "assists": 7.0, "games_sample": 8.0},
+                {"name": "Wing Two", "minutes": 32.0, "points": 18.0, "rebounds": 6.0, "assists": 4.0, "games_sample": 8.0},
+                {"name": "Big Three", "minutes": 30.0, "points": 16.0, "rebounds": 10.0, "assists": 2.0, "games_sample": 8.0},
+            ],
+            114.0,
+            [{"player_name": "Guard One", "status": "Questionable"}],
+        )
+        self.assertIsNotNone(context)
+        self.assertEqual(context.code, "MIL")
+        self.assertAlmostEqual(context.expected_points, 114.0)
+        self.assertTrue(any(player.minutes > 0 for player in context.players))
+
+    def test_nba_possession_simulator_generates_player_distributions(self) -> None:
+        away = NBATeamContext(
+            code="LAC",
+            expected_points=113.0,
+            players=[
+                NBAPlayerProfile("Guard A", 35.0, 26.0, 5.0, 7.0, games_sample=8.0),
+                NBAPlayerProfile("Wing A", 34.0, 20.0, 6.0, 4.0, games_sample=8.0),
+                NBAPlayerProfile("Big A", 32.0, 18.0, 11.0, 3.0, games_sample=8.0),
+                NBAPlayerProfile("Guard B", 28.0, 12.0, 3.0, 5.0, games_sample=8.0),
+                NBAPlayerProfile("Wing B", 26.0, 10.0, 5.0, 2.0, games_sample=8.0),
+            ],
+        )
+        home = NBATeamContext(
+            code="MIL",
+            expected_points=111.0,
+            players=[
+                NBAPlayerProfile("Guard C", 36.0, 27.0, 4.0, 8.0, games_sample=8.0),
+                NBAPlayerProfile("Wing C", 33.0, 19.0, 7.0, 4.0, games_sample=8.0),
+                NBAPlayerProfile("Big C", 31.0, 17.0, 10.0, 3.0, games_sample=8.0),
+                NBAPlayerProfile("Guard D", 28.0, 11.0, 4.0, 4.0, games_sample=8.0),
+                NBAPlayerProfile("Wing D", 25.0, 9.0, 5.0, 2.0, games_sample=8.0),
+            ],
+        )
+        simulator = NBAGameSimulator(NBAGameConfig(n_simulations=200, random_seed=11))
+        result = simulator.simulate_game(
+            away=away,
+            home=home,
+            tracked_props={("Guard A", "points"), ("Big C", "rebounds"), ("Guard C", "assists")},
+        )
+        self.assertEqual(len(result.away_scores), 200)
+        self.assertIn(("Guard A", "points"), result.player_props)
+        self.assertGreater(result.player_props[("Guard A", "points")].mean, 10.0)
+        self.assertGreater(result.player_props[("Big C", "rebounds")].mean, 4.0)
+        self.assertGreater(result.player_props[("Guard C", "assists")].mean, 2.0)
+
+    def test_live_nba_sim_skips_players_not_in_matchup(self) -> None:
+        with patch(
+            "quantum_parlay_oracle.load_nba_matchup_profile_snapshot",
+            return_value={
+                "away_profiles": [
+                    {"name": "Guard A", "minutes": 35.0, "points": 26.0, "rebounds": 5.0, "assists": 7.0, "games_sample": 8.0}
+                ],
+                "home_profiles": [
+                    {"name": "Guard B", "minutes": 34.0, "points": 24.0, "rebounds": 4.0, "assists": 8.0, "games_sample": 8.0}
+                ],
+            },
+        ), patch("quantum_parlay_oracle.load_game_context_snapshot", return_value={"availability": {"away": [], "home": []}}), patch(
+            "quantum_parlay_oracle.load_team_form_snapshot",
+            return_value={"LAC": {"net_rating_proxy": 1.0}, "MIL": {"net_rating_proxy": 0.0}},
+        ):
+            probabilities = simulate_live_nba_leg_probabilities(
+                "LAC@MIL",
+                "2026-03-29",
+                [Leg(0, "Someone Else O 5 AST", "prop", "LAC@MIL", 0.5, "notes", "nba")],
+            )
+        self.assertEqual(probabilities, {})
 
     def test_nba_dispersion_reflects_uncertainty(self) -> None:
         stable = nba_stat_dispersion(
@@ -184,6 +262,43 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(probabilities, {})
         self.assertEqual(reason, "Lineup not confirmed")
 
+    def test_fetch_live_nba_team_form_uses_date_specific_scoreboard_records(self) -> None:
+        mock_games = [
+            type(
+                "Game",
+                (),
+                {
+                    "away_code": "LAC",
+                    "home_code": "MIL",
+                    "away_detail": "42-30",
+                    "home_detail": "38-34",
+                },
+            )()
+        ]
+        with patch("quantum_parlay_oracle.fetch_nba_schedule", return_value=mock_games):
+            form = fetch_live_nba_team_form("2026-03-29")
+        self.assertEqual(form["LAC"]["games_played"], 72)
+        self.assertGreater(form["LAC"]["net_rating_proxy"], 0.0)
+        self.assertEqual(form["MIL"]["games_played"], 72)
+
+    def test_nba_team_form_is_usable_rejects_placeholder_snapshot(self) -> None:
+        self.assertFalse(
+            nba_team_form_is_usable(
+                {
+                    "LAC": {"games_played": 1, "win_pct": 0.0, "net_rating_proxy": -12.0},
+                    "MIL": {"games_played": 1, "win_pct": 0.0, "net_rating_proxy": -12.0},
+                }
+            )
+        )
+        self.assertTrue(
+            nba_team_form_is_usable(
+                {
+                    "LAC": {"games_played": 74, "win_pct": 0.51, "net_rating_proxy": 0.3},
+                    "MIL": {"games_played": 73, "win_pct": 0.39, "net_rating_proxy": -2.4},
+                }
+            )
+        )
+
     def test_tiered_parlays_require_positive_edge_and_target_payout(self) -> None:
         legs = [
             Leg(0, "A ML", "ml", "A@B", 0.78, "notes", "nba"),
@@ -214,6 +329,30 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertTrue(all(leg["score_delta"] > 0 for leg in cash["legs"]))
         self.assertGreaterEqual(cash["payout_estimate"], cash["target_payout_min"])
         self.assertLessEqual(cash["payout_estimate"], cash["target_payout_max"])
+
+    def test_cash_tier_avoids_same_game_stacks(self) -> None:
+        legs = [
+            Leg(0, "AAA ML", "ml", "AAA@BBB", 0.72, "notes", "mlb"),
+            Leg(1, "AAA@BBB O5.5", "total", "AAA@BBB", 0.72, "notes", "mlb"),
+            Leg(2, "CCC ML", "ml", "CCC@DDD", 0.74, "notes", "mlb"),
+            Leg(3, "EEE ML", "ml", "EEE@FFF", 0.73, "notes", "mlb"),
+            Leg(4, "GGG ML", "ml", "GGG@HHH", 0.71, "notes", "mlb"),
+        ]
+        activation = np.array([0.84, 0.83, 0.82, 0.81, 0.79], dtype=np.float64)
+        co_activation = np.outer(activation, activation)
+        np.fill_diagonal(co_activation, activation)
+        pricing_details = {
+            idx: {"pricing_source": "simulation", "pricing_label": "Monte Carlo"} for idx in range(len(legs))
+        }
+        tiers = build_tiered_parlays(
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            pricing_details=pricing_details,
+        )
+        cash = next(tier for tier in tiers if tier["key"] == "cash")
+        games = [leg["game"] for leg in cash["legs"]]
+        self.assertEqual(len(games), len(set(games)))
 
 
 if __name__ == "__main__":

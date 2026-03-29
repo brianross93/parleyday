@@ -9,6 +9,14 @@ from .mlb import (
     PropDistribution,
     TeamContext,
 )
+from .nba import (
+    NBAGameConfig,
+    NBAGameSimulationResult,
+    NBAGameSimulator,
+    NBAPlayerProfile,
+    NBAPropDistribution,
+    NBATeamContext,
+)
 
 __all__ = [
     "BatterProfile",
@@ -20,4 +28,10 @@ __all__ = [
     "PitcherProfile",
     "PropDistribution",
     "TeamContext",
+    "NBAGameConfig",
+    "NBAGameSimulationResult",
+    "NBAGameSimulator",
+    "NBAPlayerProfile",
+    "NBAPropDistribution",
+    "NBATeamContext",
 ]
