@@ -445,6 +445,9 @@
                               </div>
                               <div class="meta-row">
                                 <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
+                                {% if leg.pricing_reason %}
+                                  <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
+                                {% endif %}
                               </div>
                             </div>
                           {% endfor %}
@@ -469,6 +472,9 @@
                       <div class="meta">{{ leg.game }} · {{ leg.category }} · model {{ "%.3f"|format(leg.activation) }} · market {{ "%.3f"|format(leg.implied_prob) }} · edge {{ "%+.3f"|format(leg.score_delta) }}</div>
                       <div class="meta-row">
                         <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
+                        {% if leg.pricing_reason %}
+                          <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
+                        {% endif %}
                         <div class="chip">{{ leg.notes }}</div>
                       </div>
                     </div>
@@ -485,6 +491,9 @@
                   <div class="meta">{{ result.moonshot.game }} · model {{ "%.3f"|format(result.moonshot.activation) }} · market {{ "%.3f"|format(result.moonshot.implied_prob) }} · edge {{ "%+.3f"|format(result.moonshot.score_delta) }}</div>
                   <div class="meta-row">
                     <div class="chip {% if result.moonshot.pricing_source == 'simulation' %}chip--sim{% elif result.moonshot.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ result.moonshot.pricing_label }}</div>
+                    {% if result.moonshot.pricing_reason %}
+                      <div class="chip chip--fallback">{{ result.moonshot.pricing_reason }}</div>
+                    {% endif %}
                     <div class="chip">{{ result.moonshot.notes }}</div>
                   </div>
                 {% else %}
@@ -504,6 +513,9 @@
                       <div class="meta">{{ leg.game }} · model {{ "%.3f"|format(leg.activation) }} · market {{ "%.3f"|format(leg.implied_prob) }} · edge {{ "%+.3f"|format(leg.score_delta) }}</div>
                       <div class="meta-row">
                         <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
+                        {% if leg.pricing_reason %}
+                          <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
+                        {% endif %}
                         <div class="chip">{{ leg.notes }}</div>
                       </div>
                     </div>

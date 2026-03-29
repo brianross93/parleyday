@@ -11,6 +11,7 @@ from quantum_parlay_oracle import (
     project_nba_player_means,
     run_oracle,
     sample_nba_stat_over_probability,
+    simulate_live_mlb_leg_probabilities,
     summarize_from_scores,
     summarize_results,
 )
@@ -158,6 +159,19 @@ class SimModelingHelperTests(unittest.TestCase):
             result = run_oracle(date_str="2026-03-29", sport="both", slate_mode="auto", score_source="sim")
         self.assertEqual(result["meta"]["entropy_source"], "No recognized legs")
         self.assertEqual(result["top_legs"], [])
+
+    def test_live_mlb_sim_falls_back_when_lineups_are_missing(self) -> None:
+        with patch(
+            "quantum_parlay_oracle.load_matchup_profile_snapshot",
+            return_value={"away_lineup": [], "home_lineup": []},
+        ):
+            probabilities, reason = simulate_live_mlb_leg_probabilities(
+                "CHC@STL",
+                "2026-03-29",
+                [Leg(0, "Pete Crow-Armstrong O 1 H", "prop", "CHC@STL", 0.5, "notes", "mlb")],
+            )
+        self.assertEqual(probabilities, {})
+        self.assertEqual(reason, "Lineup not confirmed")
 
 
 if __name__ == "__main__":

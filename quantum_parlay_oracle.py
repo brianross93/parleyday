@@ -2093,17 +2093,26 @@ def simulation_activation_and_coactivation(
 
     game_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
     mlb_prop_cache: dict[str, dict[str, float]] = {}
+    mlb_prop_fallback_reason: dict[str, str | None] = {}
     nba_prop_cache: dict[str, dict[str, float]] = {}
     for idx, leg in enumerate(legs):
         if leg.category not in {"ml", "total"}:
             if leg.sport == "mlb" and leg.category == "prop":
                 if leg.game not in mlb_prop_cache:
                     game_prop_legs = [candidate for candidate in legs if candidate.game == leg.game and candidate.sport == "mlb" and candidate.category == "prop"]
-                    mlb_prop_cache[leg.game] = simulate_live_mlb_leg_probabilities(leg.game, date_str, game_prop_legs)
+                    probs, reason = simulate_live_mlb_leg_probabilities(leg.game, date_str, game_prop_legs)
+                    mlb_prop_cache[leg.game] = probs
+                    mlb_prop_fallback_reason[leg.game] = reason
                 sim_prob = mlb_prop_cache.get(leg.game, {}).get(leg.label)
                 if sim_prob is not None:
                     activation[idx] = sim_prob
                     pricing_details[idx] = {"pricing_source": "simulation", "pricing_label": "Monte Carlo"}
+                elif mlb_prop_fallback_reason.get(leg.game):
+                    pricing_details[idx] = {
+                        "pricing_source": "market_fallback",
+                        "pricing_label": "Market fallback",
+                        "pricing_reason": mlb_prop_fallback_reason[leg.game],
+                    }
             if leg.sport == "nba" and leg.category == "prop":
                 if leg.game not in nba_prop_cache:
                     game_prop_legs = [candidate for candidate in legs if candidate.game == leg.game and candidate.sport == "nba" and candidate.category == "prop"]
@@ -2389,12 +2398,16 @@ def simulate_live_mlb_leg_probabilities(
     game: str,
     date_str: str,
     game_legs: list[Leg],
-) -> dict[str, float]:
+) -> tuple[dict[str, float], str | None]:
     if team_context_from_cached_payload is None or MLBGameSimulator is None or MLBGameConfig is None:
-        return {}
+        return {}, "Live MLB simulator unavailable"
     payload = load_matchup_profile_snapshot(date_str, game)
     if payload is None:
-        return {}
+        return {}, "No cached matchup profile"
+    away_lineup = payload.get("away_lineup", []) or []
+    home_lineup = payload.get("home_lineup", []) or []
+    if not away_lineup or not home_lineup:
+        return {}, "Lineup not confirmed"
     away, home = build_calibrated_live_mlb_contexts(date_str, game, payload)
     simulator = MLBGameSimulator(MLBGameConfig(n_simulations=750, random_seed=abs(hash((date_str, game))) % (2**32)))
     result = simulator.simulate_game(away=away, home=home)
@@ -2410,7 +2423,7 @@ def simulate_live_mlb_leg_probabilities(
         sim_prob = distribution.over_probabilities.get(line)
         if sim_prob is not None:
             probabilities[leg.label] = sim_prob
-    return probabilities
+    return probabilities, None
 
 
 def simulate_live_nba_leg_probabilities(
@@ -2490,9 +2503,13 @@ def build_calibrated_live_mlb_contexts(
     payload = payload or load_matchup_profile_snapshot(date_str, game)
     if payload is None:
         raise RuntimeError(f"No cached MLB matchup profile for {game} on {date_str}")
+    away_lineup = payload.get("away_lineup", []) or []
+    home_lineup = payload.get("home_lineup", []) or []
+    if not away_lineup or not home_lineup:
+        raise RuntimeError(f"Incomplete MLB lineup data for {game} on {date_str}")
     away_code, home_code = game.split("@")
-    away = team_context_from_cached_payload(away_code, payload.get("away_lineup", []), payload.get("away_pitcher", {}))
-    home = team_context_from_cached_payload(home_code, payload.get("home_lineup", []), payload.get("home_pitcher", {}))
+    away = team_context_from_cached_payload(away_code, away_lineup, payload.get("away_pitcher", {}))
+    home = team_context_from_cached_payload(home_code, home_lineup, payload.get("home_pitcher", {}))
     game_context = load_game_context_snapshot(date_str, "mlb", game)
     target_away, target_home = expected_mlb_runs(away_code, home_code, load_team_form_snapshot(date_str, "mlb"), game_context)
     baseline_away, baseline_home = sample_mlb_score_means(away, home, date_str, game, tag="cal-base", n_simulations=120)
@@ -2684,6 +2701,7 @@ def build_tiered_parlays(
                         "score_delta": float(tier_activation[idx]) - float(legs[idx].implied_prob),
                         "pricing_source": pricing_details.get(idx, {}).get("pricing_source", tier_score_mode),
                         "pricing_label": pricing_details.get(idx, {}).get("pricing_label", tier_score_mode.title()),
+                        "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
                         "notes": legs[idx].notes,
                     }
                     for idx in parlay
@@ -2742,6 +2760,7 @@ def summarize_from_scores(
                 "score_delta": float(activation[idx]) - float(leg.implied_prob),
                 "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
                 "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
+                "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
                 "notes": leg.notes,
             }
         )
@@ -2770,6 +2789,7 @@ def summarize_from_scores(
                         "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
                         "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
                         "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
+                        "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
                         "notes": legs[idx].notes,
                     }
                     for idx in parlay
@@ -2799,6 +2819,7 @@ def summarize_from_scores(
             "score_delta": float(activation[best_idx]) - float(legs[best_idx].implied_prob),
             "pricing_source": pricing_details.get(best_idx, {}).get("pricing_source", "market"),
             "pricing_label": pricing_details.get(best_idx, {}).get("pricing_label", "Market implied"),
+            "pricing_reason": pricing_details.get(best_idx, {}).get("pricing_reason"),
             "notes": legs[best_idx].notes,
         }
 
@@ -2814,6 +2835,7 @@ def summarize_from_scores(
                 "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
                 "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
                 "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
+                "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
                 "notes": legs[idx].notes,
             }
         )
