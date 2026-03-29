@@ -4,6 +4,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -1660,6 +1661,64 @@ def standalone_leg_score(leg: Leg, activation_value: float) -> float:
     return score
 
 
+def leg_trust_score(
+    leg: Leg,
+    activation_value: float,
+    pricing_meta: dict[str, str] | None = None,
+) -> float:
+    pricing_meta = pricing_meta or {}
+    source = pricing_meta.get("pricing_source", "market")
+    trust = {
+        "simulation": 1.0,
+        "residual": 0.82,
+        "heuristic": 0.72,
+        "market": 0.58,
+        "market_fallback": 0.38,
+        "implied_fallback": 0.48,
+    }.get(source, 0.5)
+    edge = abs(float(activation_value) - float(leg.implied_prob))
+    if edge >= 0.40:
+        trust *= 0.45
+    elif edge >= 0.30:
+        trust *= 0.62
+    elif edge >= 0.20:
+        trust *= 0.82
+    if is_hr_prop(leg) and source != "simulation":
+        trust *= 0.7
+    return float(np.clip(trust, 0.0, 1.0))
+
+
+def market_parlay_payout_estimate(parlay: list[int], legs: list[Leg]) -> float | None:
+    if not parlay:
+        return None
+    market_prob = float(np.prod([float(legs[idx].implied_prob) for idx in parlay]))
+    return (1.0 / market_prob) if market_prob > 0 else None
+
+
+def model_parlay_probability(
+    parlay: list[int],
+    activation: np.ndarray,
+    co_activation: np.ndarray,
+) -> float:
+    if not parlay:
+        return 0.0
+    if len(parlay) == 1:
+        return float(activation[parlay[0]])
+    pairwise_ratios = []
+    for i, first in enumerate(parlay):
+        for second in parlay[i + 1 :]:
+            independent = float(activation[first] * activation[second])
+            if independent <= 0:
+                continue
+            joint = float(co_activation[first, second])
+            pairwise_ratios.append(joint / independent)
+    base_prob = float(np.prod([float(activation[idx]) for idx in parlay]))
+    if not pairwise_ratios:
+        return base_prob
+    correlation_adjustment = float(np.clip(np.mean(pairwise_ratios), 0.6, 1.6))
+    return float(np.clip(base_prob * correlation_adjustment, 0.0, 0.999))
+
+
 def candidate_leg_score(
     candidate_idx: int,
     parlay: list[int],
@@ -1972,6 +2031,8 @@ TIER_DEFINITIONS = [
         "max_prob": 0.98,
         "target_payout_min": 1.5,
         "target_payout_max": 3.0,
+        "min_edge": 0.015,
+        "min_trust": 0.55,
         "bankroll_hint": "50%",
         "description": "High-probability grinder built to cash regularly.",
     },
@@ -1983,6 +2044,8 @@ TIER_DEFINITIONS = [
         "max_prob": 0.70,
         "target_payout_min": 5.0,
         "target_payout_max": 15.0,
+        "min_edge": 0.03,
+        "min_trust": 0.45,
         "bankroll_hint": "30%",
         "description": "Mid-range state-search ticket where combination fit matters most.",
     },
@@ -1994,6 +2057,8 @@ TIER_DEFINITIONS = [
         "max_prob": 0.50,
         "target_payout_min": 25.0,
         "target_payout_max": 100.0,
+        "min_edge": 0.04,
+        "min_trust": 0.35,
         "bankroll_hint": "20%",
         "description": "Asymmetric upside ticket built from lower-probability legs.",
     },
@@ -2650,45 +2715,117 @@ def build_tiered_parlays(
     pricing_details = pricing_details or {}
     tiers = []
     for tier in TIER_DEFINITIONS:
-        tier_activation = activation
-        tier_co_activation = co_activation
-        tier_score_mode = "implied"
         residual_requested = tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None
+        tier_variants = []
         if tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None:
-            tier_activation = cash_activation
-            tier_co_activation = cash_co_activation
-            tier_score_mode = "residual"
-        parlay = build_filtered_parlay(
-            legs=legs,
-            activation=tier_activation,
-            co_activation=tier_co_activation,
-            size=tier["size"],
-            min_prob=tier["min_prob"],
-            max_prob=tier["max_prob"],
-        )
-        if (
-            tier["key"] == "cash"
-            and len(parlay) < tier["size"]
-            and cash_activation is not None
-            and cash_co_activation is not None
-        ):
+            tier_variants.append(("residual", cash_activation, cash_co_activation))
+        tier_variants.append(("implied" if tier["key"] != "cash" else "implied_fallback", activation, co_activation))
+
+        best_choice: tuple[list[int], np.ndarray, np.ndarray, str, float, float] | None = None
+        for tier_score_mode, tier_activation, tier_co_activation in tier_variants:
+            leg_candidates = []
+            for idx, leg in enumerate(legs):
+                activation_value = float(tier_activation[idx])
+                edge = activation_value - float(leg.implied_prob)
+                trust = leg_trust_score(leg, activation_value, pricing_details.get(idx))
+                if edge < tier["min_edge"]:
+                    continue
+                if trust < tier["min_trust"]:
+                    continue
+                if tier["key"] == "cash" and pricing_details.get(idx, {}).get("pricing_source") == "market_fallback":
+                    continue
+                if not leg_allowed_for_parlay_size(leg, activation_value, tier["size"]):
+                    continue
+                leg_candidates.append(
+                    (
+                        idx,
+                        (edge * 4.0)
+                        + (trust * 1.5)
+                        + standalone_leg_score(leg, activation_value),
+                    )
+                )
+
+            ranked_candidates = [idx for idx, _ in sorted(leg_candidates, key=lambda item: item[1], reverse=True)]
+            ranked_candidates = ranked_candidates[: max(12, candidate_pool_limit(tier["size"]))]
+            best_variant: tuple[list[int], float, float] | None = None
+            for parlay in combinations(ranked_candidates, tier["size"]):
+                parlay_list = list(parlay)
+                if any(incompatible_pair(legs[a], legs[b]) for a, b in combinations(parlay_list, 2)):
+                    continue
+                payout_estimate = market_parlay_payout_estimate(parlay_list, legs)
+                if payout_estimate is None:
+                    continue
+                payout_miss = 0.0
+                if payout_estimate < tier["target_payout_min"]:
+                    payout_miss = tier["target_payout_min"] - payout_estimate
+                elif payout_estimate > tier["target_payout_max"]:
+                    payout_miss = payout_estimate - tier["target_payout_max"]
+                if payout_miss > 0.15 and tier["key"] == "cash":
+                    continue
+                if payout_miss > 0.5 and tier["key"] == "decent":
+                    continue
+                if payout_miss > 4.0 and tier["key"] == "longshot":
+                    continue
+                model_prob = model_parlay_probability(parlay_list, tier_activation, tier_co_activation)
+                market_prob = float(np.prod([float(legs[idx].implied_prob) for idx in parlay_list]))
+                if market_prob <= 0:
+                    continue
+                avg_trust = float(
+                    np.mean(
+                        [
+                            leg_trust_score(legs[idx], float(tier_activation[idx]), pricing_details.get(idx))
+                            for idx in parlay_list
+                        ]
+                    )
+                )
+                avg_edge = float(
+                    np.mean([float(tier_activation[idx]) - float(legs[idx].implied_prob) for idx in parlay_list])
+                )
+                score = (
+                    partial_state_score(
+                        parlay=parlay_list,
+                        legs=legs,
+                        activation=tier_activation,
+                        co_activation=tier_co_activation,
+                        available_sports={leg.sport for leg in legs},
+                        target_size=tier["size"],
+                    )
+                    + (avg_edge * 10.0)
+                    + (avg_trust * 1.5)
+                    + ((model_prob - market_prob) * 8.0)
+                    - (payout_miss * 0.6)
+                )
+                if best_variant is None or score > best_variant[1]:
+                    best_variant = (parlay_list, score, payout_estimate)
+
+            if best_variant is not None:
+                parlay_list, score, payout_estimate = best_variant
+                if best_choice is None or score > best_choice[4]:
+                    best_choice = (
+                        parlay_list,
+                        tier_activation,
+                        tier_co_activation,
+                        tier_score_mode,
+                        score,
+                        payout_estimate,
+                    )
+
+        if best_choice is None:
+            parlay = []
             tier_activation = activation
             tier_co_activation = co_activation
-            tier_score_mode = "implied_fallback"
-            parlay = build_filtered_parlay(
-                legs=legs,
-                activation=tier_activation,
-                co_activation=tier_co_activation,
-                size=tier["size"],
-                min_prob=tier["min_prob"],
-                max_prob=tier["max_prob"],
-            )
-        combo_prob = float(np.prod([tier_activation[idx] for idx in parlay])) if parlay else 0.0
+            tier_score_mode = "implied"
+            payout_estimate = None
+        else:
+            parlay, tier_activation, tier_co_activation, tier_score_mode, _, payout_estimate = best_choice
+
+        combo_prob = model_parlay_probability(parlay, tier_activation, tier_co_activation) if parlay else 0.0
         tiers.append(
             {
                 **tier,
                 "actual_size": len(parlay),
-                "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
+                "payout_estimate": payout_estimate,
+                "model_joint_prob": combo_prob if combo_prob > 0 else None,
                 "score_mode": tier_score_mode,
                 "residual_requested": residual_requested,
                 "legs": [
@@ -2699,6 +2836,11 @@ def build_tiered_parlays(
                         "activation": float(tier_activation[idx]),
                         "implied_prob": float(legs[idx].implied_prob),
                         "score_delta": float(tier_activation[idx]) - float(legs[idx].implied_prob),
+                        "trust_score": leg_trust_score(
+                            legs[idx],
+                            float(tier_activation[idx]),
+                            pricing_details.get(idx),
+                        ),
                         "pricing_source": pricing_details.get(idx, {}).get("pricing_source", tier_score_mode),
                         "pricing_label": pricing_details.get(idx, {}).get("pricing_label", tier_score_mode.title()),
                         "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
@@ -2740,7 +2882,15 @@ def summarize_from_scores(
             "fades": [],
         }
     n_samples = int(loader_meta.get("games", 0))
-    ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
+    ranked = sorted(
+        range(len(legs)),
+        key=lambda idx: (
+            ((float(activation[idx]) - float(legs[idx].implied_prob)) * 6.0)
+            + (leg_trust_score(legs[idx], float(activation[idx]), pricing_details.get(idx)) * 1.5)
+            + (float(activation[idx]) * 0.2)
+        ),
+        reverse=True,
+    )
     pricing_summary: dict[str, int] = {}
     for idx in range(len(legs)):
         source = pricing_details.get(idx, {}).get("pricing_source", "market")
@@ -2758,6 +2908,11 @@ def summarize_from_scores(
                 "activation": float(activation[idx]),
                 "implied_prob": float(leg.implied_prob),
                 "score_delta": float(activation[idx]) - float(leg.implied_prob),
+                "trust_score": leg_trust_score(
+                    leg,
+                    float(activation[idx]),
+                    pricing_details.get(idx),
+                ),
                 "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
                 "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
                 "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
@@ -2817,6 +2972,11 @@ def summarize_from_scores(
             "activation": float(activation[best_idx]),
             "implied_prob": float(legs[best_idx].implied_prob),
             "score_delta": float(activation[best_idx]) - float(legs[best_idx].implied_prob),
+            "trust_score": leg_trust_score(
+                legs[best_idx],
+                float(activation[best_idx]),
+                pricing_details.get(best_idx),
+            ),
             "pricing_source": pricing_details.get(best_idx, {}).get("pricing_source", "market"),
             "pricing_label": pricing_details.get(best_idx, {}).get("pricing_label", "Market implied"),
             "pricing_reason": pricing_details.get(best_idx, {}).get("pricing_reason"),
@@ -2833,6 +2993,11 @@ def summarize_from_scores(
                 "activation": float(activation[idx]),
                 "implied_prob": float(legs[idx].implied_prob),
                 "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
+                "trust_score": leg_trust_score(
+                    legs[idx],
+                    float(activation[idx]),
+                    pricing_details.get(idx),
+                ),
                 "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
                 "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
                 "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),

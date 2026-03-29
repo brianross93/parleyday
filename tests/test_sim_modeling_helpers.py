@@ -1,6 +1,7 @@
 import unittest
 
 from quantum_parlay_oracle import (
+    build_tiered_parlays,
     calibrate_mlb_offense_factor,
     direct_activation_and_coactivation,
     leg_moneyline_side,
@@ -172,6 +173,37 @@ class SimModelingHelperTests(unittest.TestCase):
             )
         self.assertEqual(probabilities, {})
         self.assertEqual(reason, "Lineup not confirmed")
+
+    def test_tiered_parlays_require_positive_edge_and_target_payout(self) -> None:
+        legs = [
+            Leg(0, "A ML", "ml", "A@B", 0.78, "notes", "nba"),
+            Leg(1, "C ML", "ml", "C@D", 0.76, "notes", "nba"),
+            Leg(2, "E ML", "ml", "E@F", 0.74, "notes", "nba"),
+            Leg(3, "G ML", "ml", "G@H", 0.52, "notes", "nba"),
+            Leg(4, "I ML", "ml", "I@J", 0.50, "notes", "nba"),
+            Leg(5, "K ML", "ml", "K@L", 0.48, "notes", "nba"),
+            Leg(6, "M ML", "ml", "M@N", 0.46, "notes", "nba"),
+            Leg(7, "O ML", "ml", "O@P", 0.44, "notes", "nba"),
+        ]
+        activation = np.array([0.81, 0.80, 0.77, 0.60, 0.57, 0.53, 0.50, 0.47], dtype=np.float64)
+        co_activation = np.outer(activation, activation)
+        np.fill_diagonal(co_activation, activation)
+        pricing_details = {
+            idx: {"pricing_source": "simulation", "pricing_label": "Monte Carlo"} for idx in range(len(legs))
+        }
+
+        tiers = build_tiered_parlays(
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            pricing_details=pricing_details,
+        )
+
+        cash = next(tier for tier in tiers if tier["key"] == "cash")
+        self.assertTrue(cash["legs"])
+        self.assertTrue(all(leg["score_delta"] > 0 for leg in cash["legs"]))
+        self.assertGreaterEqual(cash["payout_estimate"], cash["target_payout_min"])
+        self.assertLessEqual(cash["payout_estimate"], cash["target_payout_max"])
 
 
 if __name__ == "__main__":
