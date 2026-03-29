@@ -465,15 +465,19 @@ def structured_threshold_label(
             threshold = rhs[:-1].strip()
 
     if not threshold:
-        floor = market.get("floor_strike")
-        if floor is not None:
-            threshold = str(int(float(floor) + 0.5))
-
-    if not threshold:
         rules = market.get("rules_primary", "")
         match = re.search(r"records\s+(\d+)\+\s+" + re.escape(metric_word), rules, re.IGNORECASE)
         if match:
             threshold = match.group(1)
+
+    if not threshold:
+        floor = market.get("floor_strike")
+        if floor is not None:
+            floor_value = float(floor)
+            if abs(floor_value - round(floor_value)) < 1e-9:
+                threshold = str(int(round(floor_value)) + 1)
+            else:
+                threshold = str(int(np.floor(floor_value)) + 1)
 
     if not threshold:
         return None
@@ -1402,10 +1406,23 @@ def dedupe_legs(legs: list[Leg]) -> list[Leg]:
             key = (leg.game, leg.label)
 
         existing = deduped.get(key)
-        current_distance = abs(leg.implied_prob - 0.5)
-        existing_distance = abs(existing.implied_prob - 0.5) if existing else None
+        if existing is None:
+            deduped[key] = leg
+            continue
 
-        if existing is None or current_distance < existing_distance:
+        def leg_priority(item: Leg) -> tuple[float, float]:
+            midpoint = market_midpoint(
+                {
+                    "last_price_dollars": item.implied_prob,
+                }
+            )
+            liquidity_proxy = abs(float(item.implied_prob) - 0.5)
+            return (
+                midpoint if midpoint is not None else float(item.implied_prob),
+                liquidity_proxy,
+            )
+
+        if leg_priority(leg) > leg_priority(existing):
             deduped[key] = leg
     ordered = sorted(deduped.values(), key=lambda leg: (leg.game, leg.category, leg.label))
     return [replace(leg, id=index) for index, leg in enumerate(ordered)]

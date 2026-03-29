@@ -13,6 +13,7 @@ from quantum_parlay_oracle import (
     run_oracle,
     sample_nba_stat_over_probability,
     simulate_live_mlb_leg_probabilities,
+    structured_threshold_label,
     summarize_from_scores,
     summarize_results,
 )
@@ -27,6 +28,15 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(parse_mlb_prop_label("Paul Skenes O 8 K"), ("Paul Skenes", "strikeouts", 7.5))
         self.assertEqual(parse_nba_prop_label("Jayson Tatum O 27 PTS"), ("Jayson Tatum", "points", 26.5))
         self.assertEqual(parse_nba_prop_label("Nikola Jokic O 11 REB"), ("Nikola Jokic", "rebounds", 10.5))
+
+    def test_structured_threshold_label_handles_integer_floor_strike(self) -> None:
+        market = {
+            "title": "Draymond Green: rebounds?",
+            "yes_sub_title": "Draymond Green",
+            "floor_strike": 2.0,
+            "rules_primary": "",
+        }
+        self.assertEqual(structured_threshold_label(market, "REB", "Rebounds"), "Draymond Green O 3 REB")
 
     def test_moneyline_side_matches_full_team_labels(self) -> None:
         self.assertEqual(
