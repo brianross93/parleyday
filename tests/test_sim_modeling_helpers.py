@@ -2,17 +2,21 @@ import unittest
 
 from quantum_parlay_oracle import (
     calibrate_mlb_offense_factor,
+    direct_activation_and_coactivation,
     leg_moneyline_side,
     nba_stat_dispersion,
     parse_mlb_prop_label,
     parse_nba_prop_label,
     partial_state_score,
     project_nba_player_means,
+    run_oracle,
     sample_nba_stat_over_probability,
+    summarize_from_scores,
     summarize_results,
 )
 import numpy as np
-from quantum_parlay_oracle import Leg, QuantumEntropySource
+from quantum_parlay_oracle import Leg, QuantumEntropySource, StaticEntropySource
+from unittest.mock import patch
 
 
 class SimModelingHelperTests(unittest.TestCase):
@@ -130,6 +134,30 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(result["summary"]["samples_collected"], 0)
         self.assertEqual(result["top_legs"], [])
         self.assertEqual(result["tier_parlays"], [])
+
+    def test_direct_activation_handles_empty_legs(self) -> None:
+        activation, co_activation, pricing = direct_activation_and_coactivation([], "implied")
+        self.assertEqual(activation.shape, (0,))
+        self.assertEqual(co_activation.shape, (0, 0))
+        self.assertEqual(pricing, {})
+
+    def test_summarize_from_scores_handles_empty_legs(self) -> None:
+        result = summarize_from_scores(
+            legs=[],
+            activation=np.zeros(0, dtype=np.float64),
+            co_activation=np.zeros((0, 0), dtype=np.float64),
+            entropy_source=StaticEntropySource("Direct market scoring"),
+            slate_mode="cached",
+            loader_meta={"games": 0, "recognized_legs": 0},
+        )
+        self.assertEqual(result["top_legs"], [])
+        self.assertEqual(result["tier_parlays"], [])
+
+    def test_run_oracle_handles_empty_leg_slate(self) -> None:
+        with patch("quantum_parlay_oracle.load_legs", return_value=([], "cached", {"games": 0, "recognized_legs": 0})):
+            result = run_oracle(date_str="2026-03-29", sport="both", slate_mode="auto", score_source="sim")
+        self.assertEqual(result["meta"]["entropy_source"], "No recognized legs")
+        self.assertEqual(result["top_legs"], [])
 
 
 if __name__ == "__main__":

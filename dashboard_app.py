@@ -1,4 +1,5 @@
 import os
+import traceback
 from datetime import datetime
 
 from flask import Flask, render_template, request
@@ -72,6 +73,7 @@ def index():
             if refresh_result is not None:
                 result["refresh"] = refresh_result
         except Exception as exc:
+            traceback.print_exc()
             error = str(exc)
 
     return render_template("index.html", form=form, result=result, error=error)

@@ -2074,6 +2074,12 @@ def simulation_activation_and_coactivation(
     legs: list[Leg],
     date_str: str,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, dict[str, str]]]:
+    if not legs:
+        return (
+            np.zeros(0, dtype=np.float64),
+            np.zeros((0, 0), dtype=np.float64),
+            {},
+        )
     implied = np.array([float(leg.implied_prob) for leg in legs], dtype=np.float64)
     activation = implied.copy()
     co_activation = np.outer(activation, activation)
@@ -2531,6 +2537,12 @@ def direct_activation_and_coactivation(
     score_source: str,
     date_str: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, dict[str, str]]]:
+    if not legs:
+        return (
+            np.zeros(0, dtype=np.float64),
+            np.zeros((0, 0), dtype=np.float64),
+            {},
+        )
     if score_source == "sim":
         if not date_str:
             raise ValueError("Simulation scoring requires a target date")
@@ -2693,6 +2705,22 @@ def summarize_from_scores(
     cash_co_activation: np.ndarray | None = None,
 ) -> dict:
     pricing_details = pricing_details or {}
+    if not legs:
+        return {
+            "meta": {
+                "entropy_source": entropy_source.source,
+                "random_bytes_consumed": getattr(entropy_source, "total_consumed", 0),
+                "samples_collected": int(loader_meta.get("games", 0)),
+                "slate_mode": slate_mode,
+                "pricing_summary": {},
+                **loader_meta,
+            },
+            "top_legs": [],
+            "parlays": [],
+            "tier_parlays": [],
+            "moonshot": None,
+            "fades": [],
+        }
     n_samples = int(loader_meta.get("games", 0))
     ranked = sorted(range(len(legs)), key=lambda idx: activation[idx], reverse=True)
     pricing_summary: dict[str, int] = {}
@@ -3002,6 +3030,34 @@ def run_oracle(
         sports=sports,
         kalshi_pages=kalshi_pages,
     )
+    if not legs:
+        return {
+            "meta": {
+                "entropy_source": "No recognized legs",
+                "random_bytes_consumed": 0,
+                "samples_collected": 0,
+                "slate_mode": resolved_slate_mode,
+                "pricing_summary": {},
+                **loader_meta,
+            },
+            "top_legs": [],
+            "parlays": [],
+            "tier_parlays": [],
+            "moonshot": None,
+            "fades": [],
+            "config": {
+                "date": date_str,
+                "sport": sport,
+                "slate_mode": slate_mode,
+                "score_source": score_source,
+                "kalshi_pages": kalshi_pages,
+                "fallback": fallback,
+                "bytes": n_bytes,
+                "samples_per_beta": samples_per_beta,
+                "warmup": warmup,
+                "thin": thin,
+            },
+        }
     if score_source == "ising":
         entropy = QuantumEntropySource(n_bytes=n_bytes, fallback=fallback)
         samples = run_ensemble(
