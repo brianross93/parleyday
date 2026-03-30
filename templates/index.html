@@ -239,6 +239,40 @@
         color: var(--accent-2);
         font-weight: 700;
       }
+      .judgment-body {
+        white-space: pre-wrap;
+        line-height: 1.55;
+        font-size: 0.95rem;
+      }
+      .chat-log {
+        display: grid;
+        gap: 10px;
+      }
+      .chat-entry {
+        border-top: 1px solid rgba(217,205,181,0.7);
+        padding-top: 10px;
+      }
+      .chat-entry:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .chat-entry--user .label {
+        color: var(--accent-2);
+      }
+      .chat-entry--assistant .label {
+        color: var(--accent);
+      }
+      .chat-box {
+        width: 100%;
+        min-height: 100px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: white;
+        color: var(--ink);
+        font: inherit;
+        resize: vertical;
+      }
       .error {
         border: 1px solid #d64545;
         background: #fff1f1;
@@ -309,7 +343,7 @@
                 <select name="score_source">
                   <option value="implied" {% if form.score_source == "implied" %}selected{% endif %}>Pure market implied (Recommended)</option>
                   <option value="sim" {% if form.score_source == "sim" %}selected{% endif %}>Live matchup simulator</option>
-                  <option value="residual" {% if form.score_source == "residual" %}selected{% endif %}>MLB residuals for Cash tier</option>
+                  <option value="residual" {% if form.score_source == "residual" %}selected{% endif %}>MLB residuals for conservative recommendations</option>
                   <option value="heuristic" {% if form.score_source == "heuristic" %}selected{% endif %}>Market + heuristics (Aggressive)</option>
                   <option value="ising" {% if form.score_source == "ising" %}selected{% endif %}>Experimental Ising / Gibbs</option>
                 </select>
@@ -336,6 +370,11 @@
               If using experimental Ising mode, skip ANU and use local randomness immediately
             </label>
 
+            <label class="check">
+              <input type="checkbox" name="llm_judge" {% if form.llm_judge %}checked{% endif %}>
+              Add an OpenAI judgment pass over the slate summary and live roster context
+            </label>
+
             <details>
               <summary>Advanced Settings</summary>
               <div class="grid" style="margin-top: 12px;">
@@ -359,10 +398,24 @@
                   <span class="help">Experimental Ising mode only.</span>
                   <input type="number" min="1024" step="1024" name="bytes" value="{{ form.bytes }}">
                 </label>
+                <label>
+                  <span class="label-title">LLM Model</span>
+                  <span class="help">Defaults to `gpt-5.4`. Override it here if you want a different OpenAI model id.</span>
+                  <input type="text" name="llm_model" value="{{ form.llm_model }}">
+                </label>
+                <label>
+                  <span class="label-title">LLM Reasoning</span>
+                  <span class="help">Only used when the OpenAI judgment pass is enabled.</span>
+                  <select name="llm_reasoning_effort">
+                    {% for value in ["low", "medium", "high", "xhigh"] %}
+                      <option value="{{ value }}" {% if form.llm_reasoning_effort == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
               </div>
             </details>
 
-            <button type="submit">Run Search</button>
+            <button type="submit" name="action" value="run">Run Search</button>
           </form>
         </aside>
       </div>
@@ -401,7 +454,7 @@
           <div class="columns">
             <div class="stack">
               <section class="card">
-                <h3>Tiered Actions</h3>
+                <h3>Recommended Parlays</h3>
                 <div class="list">
                   {% for parlay in result.tier_parlays %}
                     <div class="item">
@@ -415,33 +468,21 @@
                           {% endif %}
                         </div>
                       </div>
-                      {% if parlay.label == "Cash" and parlay.residual_requested %}
-                        <div class="meta">
-                          Cash engine:
-                          {% if parlay.score_mode == "residual" %}
-                            MLB residual model
-                          {% elif parlay.score_mode == "implied_fallback" %}
-                            implied fallback
-                          {% else %}
-                            implied
-                          {% endif %}
-                        </div>
+                      <div class="meta">{{ parlay.description }} Bankroll hint: {{ parlay.bankroll_hint }}</div>
+                      {% if parlay.model_joint_prob %}
+                        <div class="meta">Model joint {{ "%.3f"|format(parlay.model_joint_prob) }} Â· market joint {{ "%.3f"|format(parlay.market_joint_prob) }} Â· avg edge {{ "%+.3f"|format(parlay.average_edge) }}</div>
                       {% endif %}
-                      <div class="meta">{{ parlay.description }} Target band: ~{{ parlay.target_payout_min }}x-{{ parlay.target_payout_max }}x. Bankroll hint: {{ parlay.bankroll_hint }}</div>
                       {% if parlay.legs %}
                         <div class="list">
                           {% for leg in parlay.legs %}
                             <div class="item">
                               <div class="label-row">
                                 <div class="label">{{ leg.label }}</div>
-                                <div>{{ "%.3f"|format(leg.activation) }}</div>
+                                <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
                               </div>
                               <div class="meta">
-                                {{ leg.game }} · model {{ "%.3f"|format(leg.activation) }} · market {{ "%.3f"|format(leg.implied_prob) }} · edge {{ "%+.3f"|format(leg.score_delta) }}
-                                {% if parlay.label == "Cash" and parlay.residual_requested %}
-                                  · delta {{ "%+.3f"|format(leg.score_delta) }}
-                                {% endif %}
-                                · trust {{ "%.0f"|format((leg.trust_score or 0) * 100) }}
+                                {{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }}
+                                · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}
                                 · {{ leg.notes }}
                               </div>
                               <div class="meta-row">
@@ -454,7 +495,7 @@
                           {% endfor %}
                         </div>
                       {% else %}
-                        <div class="empty">No viable parlay inside this implied-probability band for the current slate.</div>
+                        <div class="empty">No viable recommendation cleared the current quality filters for this slate.</div>
                       {% endif %}
                     </div>
                   {% endfor %}
@@ -468,9 +509,9 @@
                     <div class="item">
                       <div class="label-row">
                         <div class="label">#{{ leg.rank }} {{ leg.label }}</div>
-                        <div>{{ "%.3f"|format(leg.activation) }}</div>
+                        <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
                       </div>
-                      <div class="meta">{{ leg.game }} · {{ leg.category }} · model {{ "%.3f"|format(leg.activation) }} · market {{ "%.3f"|format(leg.implied_prob) }} · edge {{ "%+.3f"|format(leg.score_delta) }} · trust {{ "%.0f"|format((leg.trust_score or 0) * 100) }}</div>
+                      <div class="meta">{{ leg.game|default("", true) }} · {{ leg.category|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}</div>
                       <div class="meta-row">
                         <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
                         {% if leg.pricing_reason %}
@@ -486,10 +527,62 @@
 
             <div class="stack">
               <section class="card">
+                <h3>LLM Judgment</h3>
+                {% if result.llm_judgment and result.llm_judgment.status == "ok" %}
+                  <div class="meta">
+                    {{ result.llm_judgment.model }} Â· reasoning {{ result.llm_judgment.reasoning_effort }}
+                    {% if result.llm_judgment.generated_at %}
+                      Â· {{ result.llm_judgment.generated_at }}
+                    {% endif %}
+                  </div>
+                  <div class="judgment-body">{{ result.llm_judgment.text }}</div>
+                {% elif result.llm_judgment %}
+                  <div class="meta">{{ result.llm_judgment.model }} Â· reasoning {{ result.llm_judgment.reasoning_effort }}</div>
+                  <div class="empty">{{ result.llm_judgment.message }}</div>
+                {% else %}
+                  <div class="empty">Enable the OpenAI judgment pass to add a final slate recommendation layer.</div>
+                {% endif %}
+              </section>
+
+              <section class="card">
+                <h3>Chat With The Model</h3>
+                <div class="meta">Ask about the current slate, the recommendations, injury context, trust, or why the model is leaning pass or bet.</div>
+                {% if result.llm_chat %}
+                  <div class="chat-log">
+                    {% for entry in result.llm_chat %}
+                      <div class="chat-entry chat-entry--{{ entry.role }}">
+                        <div class="label">{{ entry.role|title }}</div>
+                        <div class="judgment-body">{{ entry.content }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                <form method="post" class="stack">
+                  <input type="hidden" name="action" value="chat">
+                  <input type="hidden" name="date" value="{{ form.date }}">
+                  <input type="hidden" name="sport" value="{{ form.sport }}">
+                  <input type="hidden" name="slate_mode" value="{{ form.slate_mode }}">
+                  <input type="hidden" name="score_source" value="{{ form.score_source }}">
+                  <input type="hidden" name="kalshi_pages" value="{{ form.kalshi_pages }}">
+                  <input type="hidden" name="samples_per_beta" value="{{ form.samples_per_beta }}">
+                  <input type="hidden" name="warmup" value="{{ form.warmup }}">
+                  <input type="hidden" name="thin" value="{{ form.thin }}">
+                  <input type="hidden" name="bytes" value="{{ form.bytes }}">
+                  <input type="hidden" name="llm_model" value="{{ form.llm_model }}">
+                  <input type="hidden" name="llm_reasoning_effort" value="{{ form.llm_reasoning_effort }}">
+                  {% if form.refresh_first %}<input type="hidden" name="refresh_first" value="on">{% endif %}
+                  {% if form.fallback %}<input type="hidden" name="fallback" value="on">{% endif %}
+                  {% if form.llm_judge %}<input type="hidden" name="llm_judge" value="on">{% endif %}
+                  <textarea name="chat_message" class="chat-box" placeholder="Why did you pass on Detroit and Memphis if the edge looks big?"></textarea>
+                  <button type="submit">Ask GPT-5.4</button>
+                </form>
+              </section>
+
+              <section class="card">
                 <h3>Moonshot</h3>
                 {% if result.moonshot %}
                   <div class="label">{{ result.moonshot.label }}</div>
-                  <div class="meta">{{ result.moonshot.game }} · model {{ "%.3f"|format(result.moonshot.activation) }} · market {{ "%.3f"|format(result.moonshot.implied_prob) }} · edge {{ "%+.3f"|format(result.moonshot.score_delta) }} · trust {{ "%.0f"|format((result.moonshot.trust_score or 0) * 100) }}</div>
+                  <div class="meta">{{ result.moonshot.game|default("", true) }} · model {{ "%.3f"|format(result.moonshot.activation|default(0, true)) }} · market {{ "%.3f"|format(result.moonshot.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(result.moonshot.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((result.moonshot.trust_score|default(0, true)) * 100) }}</div>
                   <div class="meta-row">
                     <div class="chip {% if result.moonshot.pricing_source == 'simulation' %}chip--sim{% elif result.moonshot.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ result.moonshot.pricing_label }}</div>
                     {% if result.moonshot.pricing_reason %}
@@ -509,9 +602,9 @@
                     <div class="item">
                       <div class="label-row">
                         <div class="label">{{ leg.label }}</div>
-                        <div>{{ "%.3f"|format(leg.activation) }}</div>
+                        <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
                       </div>
-                      <div class="meta">{{ leg.game }} · model {{ "%.3f"|format(leg.activation) }} · market {{ "%.3f"|format(leg.implied_prob) }} · edge {{ "%+.3f"|format(leg.score_delta) }} · trust {{ "%.0f"|format((leg.trust_score or 0) * 100) }}</div>
+                      <div class="meta">{{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}</div>
                       <div class="meta-row">
                         <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
                         {% if leg.pricing_reason %}
@@ -545,6 +638,20 @@
                         {% endif %}
                       </div>
                     </div>
+                    {% if result.refresh.nba_injury_report %}
+                      <div class="item">
+                        <div class="label">NBA Injury Report</div>
+                        <div class="meta">
+                          status {{ result.refresh.nba_injury_report.status }}
+                          Â· matched {{ result.refresh.nba_injury_report.matched_matchups }}/{{ result.refresh.nba_injury_report.expected_matchups }}
+                          Â· submitted teams {{ result.refresh.nba_injury_report.submitted_teams }}/{{ result.refresh.nba_injury_report.expected_teams }}
+                        </div>
+                        <div class="meta">{{ result.refresh.nba_injury_report.message }}</div>
+                        {% if result.refresh.nba_injury_report.report_url %}
+                          <div class="meta"><a href="{{ result.refresh.nba_injury_report.report_url }}" target="_blank" rel="noopener noreferrer">{{ result.refresh.nba_injury_report.report_url }}</a></div>
+                        {% endif %}
+                      </div>
+                    {% endif %}
                   {% endif %}
                   <div class="item">
                     <div class="label">Model Engine</div>
@@ -576,3 +683,7 @@
     </div>
   </body>
   </html>
+
+
+
+

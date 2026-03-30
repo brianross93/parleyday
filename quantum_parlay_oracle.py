@@ -9,6 +9,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from env_config import load_local_env
+
+load_local_env()
+
 try:
     import requests
 except ImportError:  # pragma: no cover - handled at runtime
@@ -31,8 +35,9 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     venue_park_factors = None
 
 try:
-    from data_pipeline.mlb_profiles import team_context_from_cached_payload
+    from data_pipeline.mlb_profiles import build_bullpen_profiles_payload, team_context_from_cached_payload
 except ImportError:  # pragma: no cover - optional dependency at runtime
+    build_bullpen_profiles_payload = None
     team_context_from_cached_payload = None
 
 try:
@@ -1222,6 +1227,66 @@ def nba_availability_penalty(entries: list[dict]) -> float:
     return penalty
 
 
+def canonicalize_player_name(name: str) -> str:
+    text = re.sub(r"\s+", " ", str(name or "").strip())
+    if not text:
+        return ""
+    if "," in text:
+        last, first = [part.strip() for part in text.split(",", 1)]
+        if first and last:
+            text = f"{first} {last}"
+    text = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def nba_availability_status_lookup(entries: list[dict] | None) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for entry in entries or []:
+        canonical_name = canonicalize_player_name(str(entry.get("player_name", "")).strip())
+        if not canonical_name:
+            continue
+        lookup[canonical_name] = str(entry.get("status", "")).strip().lower()
+    return lookup
+
+
+def nba_short_rotation_penalty(player_count: int) -> float:
+    shortage = max(0, 10 - int(player_count))
+    if shortage <= 0:
+        return 0.0
+    return (shortage * 1.35) + (0.4 if shortage >= 2 else 0.0)
+
+
+def nba_roster_offense_penalty(
+    profiles: list[dict] | None,
+    availability_entries: list[dict] | None = None,
+) -> float:
+    profiles = profiles or []
+    availability_by_name = nba_availability_status_lookup(availability_entries)
+    status_weights = {
+        "out": 1.0,
+        "doubtful": 0.72,
+        "questionable": 0.22,
+        "probable": 0.05,
+    }
+    playable_count = 0
+    lost_points = 0.0
+    for profile in profiles:
+        name = str(profile.get("name", "")).strip()
+        if not name:
+            continue
+        base_points = max(float(profile.get("points", 0.0)), 0.0)
+        base_minutes = max(float(profile.get("minutes", 0.0)), 0.0)
+        status = availability_by_name.get(
+            canonicalize_player_name(name),
+            str(profile.get("status", "active")).strip().lower(),
+        )
+        weight = status_weights.get(status, 0.0)
+        if weight < 1.0:
+            playable_count += 1
+        lost_points += base_points * weight * min(max(base_minutes, 10.0) / 32.0, 1.15)
+    return lost_points * 0.42 + nba_short_rotation_penalty(playable_count)
+
+
 def expected_nba_points(
     away_code: str,
     home_code: str,
@@ -1281,6 +1346,14 @@ def simulate_game_distributions(
         payload = load_nba_matchup_profile_snapshot(date_str, f"{away_code}@{home_code}")
         if payload is not None and NBAGameSimulator is not None and NBAGameConfig is not None:
             availability = (game_context or {}).get("availability") or {}
+            away_mean = max(
+                90.0,
+                away_mean - nba_roster_offense_penalty(payload.get("away_profiles", []), availability.get("away", [])),
+            )
+            home_mean = max(
+                90.0,
+                home_mean - nba_roster_offense_penalty(payload.get("home_profiles", []), availability.get("home", [])),
+            )
             away_context = build_live_nba_team_context(
                 away_code,
                 payload.get("away_profiles", []),
@@ -1794,6 +1867,33 @@ def market_parlay_payout_estimate(parlay: list[int], legs: list[Leg]) -> float |
     return (1.0 / market_prob) if market_prob > 0 else None
 
 
+def serialize_leg_summary(
+    leg: Leg,
+    *,
+    activation_value: float,
+    pricing_meta: dict[str, str] | None = None,
+    rank: int | None = None,
+) -> dict:
+    pricing_meta = pricing_meta or {}
+    payload = {
+        "label": leg.label,
+        "sport": leg.sport,
+        "category": leg.category,
+        "game": leg.game,
+        "activation": float(activation_value),
+        "implied_prob": float(leg.implied_prob),
+        "score_delta": float(activation_value) - float(leg.implied_prob),
+        "trust_score": leg_trust_score(leg, float(activation_value), pricing_meta),
+        "pricing_source": pricing_meta.get("pricing_source", "market"),
+        "pricing_label": pricing_meta.get("pricing_label", "Market implied"),
+        "pricing_reason": pricing_meta.get("pricing_reason"),
+        "notes": leg.notes,
+    }
+    if rank is not None:
+        payload["rank"] = rank
+    return payload
+
+
 def model_parlay_probability(
     parlay: list[int],
     activation: np.ndarray,
@@ -2121,48 +2221,24 @@ def build_greedy_parlay(
     return build_state_parlay(legs, activation, co_activation, size)
 
 
-TIER_DEFINITIONS = [
+RECOMMENDATION_PROFILES = [
     {
-        "key": "cash",
-        "label": "Cash",
-        "size": 3,
-        "min_prob": 0.70,
-        "max_prob": 0.98,
-        "target_payout_min": 1.5,
-        "target_payout_max": 3.0,
-        "min_edge": 0.015,
-        "min_trust": 0.55,
-        "max_same_game_legs": 1,
-        "bankroll_hint": "50%",
-        "description": "High-probability grinder built to cash regularly.",
+        "key": "best",
+        "label": "Best Overall",
+        "description": "Highest composite score across edge, trust, fit, and expected value.",
+        "bankroll_hint": "Primary",
     },
     {
-        "key": "decent",
-        "label": "Decent Bet",
-        "size": 4,
-        "min_prob": 0.50,
-        "max_prob": 0.70,
-        "target_payout_min": 5.0,
-        "target_payout_max": 15.0,
-        "min_edge": 0.03,
-        "min_trust": 0.45,
-        "max_same_game_legs": 1,
-        "bankroll_hint": "30%",
-        "description": "Mid-range state-search ticket where combination fit matters most.",
+        "key": "safe",
+        "label": "Most Likely",
+        "description": "Highest hit-rate recommendation among the available positive constructions.",
+        "bankroll_hint": "Conservative",
     },
     {
-        "key": "longshot",
-        "label": "Longshot",
-        "size": 5,
-        "min_prob": 0.30,
-        "max_prob": 0.50,
-        "target_payout_min": 25.0,
-        "target_payout_max": 100.0,
-        "min_edge": 0.04,
-        "min_trust": 0.35,
-        "max_same_game_legs": 2,
-        "bankroll_hint": "20%",
-        "description": "Asymmetric upside ticket built from lower-probability legs.",
+        "key": "upside",
+        "label": "Best Upside",
+        "description": "Best edge-adjusted payout without a hard odds cap.",
+        "bankroll_hint": "Aggressive",
     },
 ]
 
@@ -2442,11 +2518,7 @@ def project_nba_player_means(
     availability_entries: list[dict] | None = None,
 ) -> dict[str, dict[str, float]]:
     availability_entries = availability_entries or []
-    availability_by_name = {
-        str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
-        for entry in availability_entries
-        if entry.get("player_name")
-    }
+    availability_by_name = nba_availability_status_lookup(availability_entries)
     status_minute_multiplier = {
         "out": 0.0,
         "doubtful": 0.20,
@@ -2458,7 +2530,10 @@ def project_nba_player_means(
         name = str(profile.get("name", "")).strip()
         if not name:
             continue
-        status = availability_by_name.get(name, str(profile.get("status", "active")).strip().lower())
+        status = availability_by_name.get(
+            canonicalize_player_name(name),
+            str(profile.get("status", "active")).strip().lower(),
+        )
         minute_multiplier = status_minute_multiplier.get(status, 1.0)
         base_minutes = max(float(profile.get("minutes", 0.0)), 8.0)
         base_points = max(float(profile.get("points", 0.0)), 0.4)
@@ -2543,7 +2618,8 @@ def build_live_nba_team_context(
                 position=source_profile.get("position"),
             )
         )
-    return NBATeamContext(code=team_code, players=players, expected_points=float(team_total))
+    adjusted_team_total = max(84.0, float(team_total) - nba_short_rotation_penalty(len(players)))
+    return NBATeamContext(code=team_code, players=players, expected_points=adjusted_team_total)
 
 
 def nba_stat_dispersion(
@@ -2639,6 +2715,14 @@ def simulate_live_nba_leg_probabilities(
     away_code, home_code = game.split("@")
     away_mean, home_mean = expected_nba_points(away_code, home_code, load_team_form_snapshot(date_str, "nba"), game_context)
     availability = game_context.get("availability") or {}
+    away_mean = max(
+        90.0,
+        away_mean - nba_roster_offense_penalty(payload.get("away_profiles", []), availability.get("away", [])),
+    )
+    home_mean = max(
+        90.0,
+        home_mean - nba_roster_offense_penalty(payload.get("home_profiles", []), availability.get("home", [])),
+    )
     away_context = build_live_nba_team_context(
         away_code,
         payload.get("away_profiles", []),
@@ -2658,21 +2742,21 @@ def simulate_live_nba_leg_probabilities(
     out_overrides: dict[tuple[str, str], float] = {}
     doubtful_overrides: dict[tuple[str, str], float] = {}
     available_names = {player.name for player in away_context.players} | {player.name for player in home_context.players}
-    status_lookup = {
-        str(entry.get("player_name", "")).strip(): str(entry.get("status", "")).strip().lower()
-        for side in ("away", "home")
-        for entry in availability.get(side, [])
-        if entry.get("player_name")
-    }
+    available_name_lookup = {canonicalize_player_name(name): name for name in available_names}
+    status_lookup: dict[str, str] = {}
+    for side in ("away", "home"):
+        status_lookup.update(nba_availability_status_lookup(availability.get(side, [])))
     for leg in game_legs:
         parsed = parse_nba_prop_label(leg.label)
         if parsed is None:
             continue
         player_name, stat, _ = parsed
-        if player_name not in available_names and player_name not in status_lookup:
+        canonical_name = canonicalize_player_name(player_name)
+        resolved_name = available_name_lookup.get(canonical_name, player_name)
+        if resolved_name not in available_names and canonical_name not in status_lookup:
             continue
-        tracked_props.add((player_name, stat))
-        status = status_lookup.get(player_name, "")
+        tracked_props.add((resolved_name, stat))
+        status = status_lookup.get(canonical_name, "")
         if status == "out":
             out_overrides[(player_name, stat)] = 0.0
         elif status == "doubtful":
@@ -2711,7 +2795,12 @@ def build_calibrated_live_mlb_contexts(
     game: str,
     payload: dict | None = None,
 ):
-    if team_context_from_cached_payload is None or MLBGameSimulator is None or MLBGameConfig is None:
+    if (
+        team_context_from_cached_payload is None
+        or build_bullpen_profiles_payload is None
+        or MLBGameSimulator is None
+        or MLBGameConfig is None
+    ):
         raise RuntimeError("Live MLB team-context calibration dependencies are unavailable")
     payload = payload or load_matchup_profile_snapshot(date_str, game)
     if payload is None:
@@ -2721,9 +2810,20 @@ def build_calibrated_live_mlb_contexts(
     if not away_lineup or not home_lineup:
         raise RuntimeError(f"Incomplete MLB lineup data for {game} on {date_str}")
     away_code, home_code = game.split("@")
-    away = team_context_from_cached_payload(away_code, away_lineup, payload.get("away_pitcher", {}))
-    home = team_context_from_cached_payload(home_code, home_lineup, payload.get("home_pitcher", {}))
     game_context = load_game_context_snapshot(date_str, "mlb", game)
+    bullpen_context = (game_context or {}).get("bullpen") or {}
+    away = team_context_from_cached_payload(
+        away_code,
+        away_lineup,
+        payload.get("away_pitcher", {}),
+        build_bullpen_profiles_payload(away_code, bullpen_context.get("away", {})),
+    )
+    home = team_context_from_cached_payload(
+        home_code,
+        home_lineup,
+        payload.get("home_pitcher", {}),
+        build_bullpen_profiles_payload(home_code, bullpen_context.get("home", {})),
+    )
     target_away, target_home = expected_mlb_runs(away_code, home_code, load_team_form_snapshot(date_str, "mlb"), game_context)
     baseline_away, baseline_home = sample_mlb_score_means(away, home, date_str, game, tag="cal-base", n_simulations=120)
     total_target = target_away + target_home
@@ -2852,6 +2952,25 @@ def build_filtered_parlay(
     return [eligible[idx] for idx in sub_parlay]
 
 
+def recommendation_leg_allowed(
+    leg: Leg,
+    activation_value: float,
+    trust: float,
+    requested_size: int,
+) -> bool:
+    if trust < 0.33:
+        return False
+    if requested_size >= 4 and activation_value < 0.34:
+        return False
+    if requested_size >= 5 and activation_value < 0.28:
+        return False
+    if leg.category == "prop":
+        if is_hr_prop(leg):
+            return activation_value >= (0.34 if requested_size >= 4 else 0.40)
+        return activation_value >= (0.40 if requested_size >= 4 else 0.46)
+    return True
+
+
 def build_tiered_parlays(
     legs: list[Leg],
     activation: np.ndarray,
@@ -2861,154 +2980,154 @@ def build_tiered_parlays(
     cash_co_activation: np.ndarray | None = None,
 ) -> list[dict]:
     pricing_details = pricing_details or {}
-    tiers = []
-    for tier in TIER_DEFINITIONS:
-        residual_requested = tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None
-        tier_variants = []
-        if tier["key"] == "cash" and cash_activation is not None and cash_co_activation is not None:
-            tier_variants.append(("residual", cash_activation, cash_co_activation))
-        tier_variants.append(("implied" if tier["key"] != "cash" else "implied_fallback", activation, co_activation))
-
-        best_choice: tuple[list[int], np.ndarray, np.ndarray, str, float, float] | None = None
-        for tier_score_mode, tier_activation, tier_co_activation in tier_variants:
-            leg_candidates = []
-            for idx, leg in enumerate(legs):
-                activation_value = float(tier_activation[idx])
-                edge = activation_value - float(leg.implied_prob)
-                trust = leg_trust_score(leg, activation_value, pricing_details.get(idx))
-                if edge < tier["min_edge"]:
-                    continue
-                if trust < tier["min_trust"]:
-                    continue
-                if tier["key"] == "cash" and pricing_details.get(idx, {}).get("pricing_source") == "market_fallback":
-                    continue
-                if not leg_allowed_for_parlay_size(leg, activation_value, tier["size"]):
-                    continue
-                leg_candidates.append(
-                    (
-                        idx,
-                        (edge * 4.0)
-                        + (trust * 1.5)
-                        + standalone_leg_score(leg, activation_value),
-                    )
+    combos: list[dict] = []
+    available_sports = {leg.sport for leg in legs}
+    size_options = [2, 3, 4, 5]
+    for requested_size in size_options:
+        leg_candidates = []
+        for idx, leg in enumerate(legs):
+            activation_value = float(activation[idx])
+            trust = leg_trust_score(leg, activation_value, pricing_details.get(idx))
+            edge = activation_value - float(leg.implied_prob)
+            if edge < -0.02:
+                continue
+            if not recommendation_leg_allowed(leg, activation_value, trust, requested_size):
+                continue
+            leg_candidates.append(
+                (
+                    idx,
+                    (edge * 4.5) + (trust * 1.6) + standalone_leg_score(leg, activation_value),
                 )
-
-            ranked_candidates = [idx for idx, _ in sorted(leg_candidates, key=lambda item: item[1], reverse=True)]
-            ranked_candidates = ranked_candidates[: max(12, candidate_pool_limit(tier["size"]))]
-            best_variant: tuple[list[int], float, float] | None = None
-            for parlay in combinations(ranked_candidates, tier["size"]):
-                parlay_list = list(parlay)
-                if any(incompatible_pair(legs[a], legs[b]) for a, b in combinations(parlay_list, 2)):
-                    continue
-                game_counts: dict[str, int] = {}
-                for idx in parlay_list:
-                    game_counts[legs[idx].game] = game_counts.get(legs[idx].game, 0) + 1
-                if max(game_counts.values(), default=0) > tier.get("max_same_game_legs", tier["size"]):
-                    continue
-                payout_estimate = market_parlay_payout_estimate(parlay_list, legs)
-                if payout_estimate is None:
-                    continue
-                payout_miss = 0.0
-                if payout_estimate < tier["target_payout_min"]:
-                    payout_miss = tier["target_payout_min"] - payout_estimate
-                elif payout_estimate > tier["target_payout_max"]:
-                    payout_miss = payout_estimate - tier["target_payout_max"]
-                if payout_miss > 0.15 and tier["key"] == "cash":
-                    continue
-                if payout_miss > 0.5 and tier["key"] == "decent":
-                    continue
-                if payout_miss > 4.0 and tier["key"] == "longshot":
-                    continue
-                model_prob = model_parlay_probability(parlay_list, tier_activation, tier_co_activation)
-                market_prob = float(np.prod([float(legs[idx].implied_prob) for idx in parlay_list]))
-                if market_prob <= 0:
-                    continue
-                avg_trust = float(
-                    np.mean(
-                        [
-                            leg_trust_score(legs[idx], float(tier_activation[idx]), pricing_details.get(idx))
-                            for idx in parlay_list
-                        ]
-                    )
+            )
+        ranked_candidates = [idx for idx, _ in sorted(leg_candidates, key=lambda item: item[1], reverse=True)]
+        ranked_candidates = ranked_candidates[: max(10, min(candidate_pool_limit(requested_size), 16))]
+        if len(ranked_candidates) < requested_size:
+            continue
+        max_same_game_legs = 1 if requested_size <= 3 else 2
+        for parlay in combinations(ranked_candidates, requested_size):
+            parlay_list = list(parlay)
+            if any(incompatible_pair(legs[a], legs[b]) for a, b in combinations(parlay_list, 2)):
+                continue
+            game_counts: dict[str, int] = {}
+            for idx in parlay_list:
+                game_counts[legs[idx].game] = game_counts.get(legs[idx].game, 0) + 1
+            if max(game_counts.values(), default=0) > max_same_game_legs:
+                continue
+            payout_estimate = market_parlay_payout_estimate(parlay_list, legs)
+            if payout_estimate is None:
+                continue
+            model_prob = model_parlay_probability(parlay_list, activation, co_activation)
+            market_prob = float(np.prod([float(legs[idx].implied_prob) for idx in parlay_list]))
+            if market_prob <= 0:
+                continue
+            avg_trust = float(
+                np.mean(
+                    [
+                        leg_trust_score(legs[idx], float(activation[idx]), pricing_details.get(idx))
+                        for idx in parlay_list
+                    ]
                 )
-                avg_edge = float(
-                    np.mean([float(tier_activation[idx]) - float(legs[idx].implied_prob) for idx in parlay_list])
+            )
+            avg_edge = float(
+                np.mean([float(activation[idx]) - float(legs[idx].implied_prob) for idx in parlay_list])
+            )
+            edge_gap = model_prob - market_prob
+            if edge_gap < -0.01:
+                continue
+            same_game_penalty = sum(max(0, count - 1) * 0.85 for count in game_counts.values())
+            payout_log = float(np.log(max(payout_estimate, 1.01)))
+            base_score = (
+                partial_state_score(
+                    parlay=parlay_list,
+                    legs=legs,
+                    activation=activation,
+                    co_activation=co_activation,
+                    available_sports=available_sports,
+                    target_size=requested_size,
                 )
-                same_game_penalty = 0.0
-                for count in game_counts.values():
-                    if count > 1:
-                        same_game_penalty += (count - 1) * 0.85
-                score = (
-                    partial_state_score(
-                        parlay=parlay_list,
-                        legs=legs,
-                        activation=tier_activation,
-                        co_activation=tier_co_activation,
-                        available_sports={leg.sport for leg in legs},
-                        target_size=tier["size"],
-                    )
-                    + (avg_edge * 10.0)
-                    + (avg_trust * 1.5)
-                    + ((model_prob - market_prob) * 8.0)
-                    - (payout_miss * 0.6)
-                    - same_game_penalty
-                )
-                if best_variant is None or score > best_variant[1]:
-                    best_variant = (parlay_list, score, payout_estimate)
+                + (avg_edge * 10.0)
+                + (edge_gap * 10.0)
+                + (avg_trust * 1.5)
+                + (payout_log * 0.45)
+                - same_game_penalty
+            )
+            combos.append(
+                {
+                    "parlay": parlay_list,
+                    "actual_size": requested_size,
+                    "payout_estimate": payout_estimate,
+                    "model_joint_prob": model_prob,
+                    "market_joint_prob": market_prob,
+                    "average_edge": avg_edge,
+                    "average_trust": avg_trust,
+                    "edge_gap": edge_gap,
+                    "base_score": base_score,
+                    "score_mode": "best_available",
+                    "residual_requested": False,
+                }
+            )
 
-            if best_variant is not None:
-                parlay_list, score, payout_estimate = best_variant
-                if best_choice is None or score > best_choice[4]:
-                    best_choice = (
-                        parlay_list,
-                        tier_activation,
-                        tier_co_activation,
-                        tier_score_mode,
-                        score,
-                        payout_estimate,
-                    )
-
-        if best_choice is None:
-            parlay = []
-            tier_activation = activation
-            tier_co_activation = co_activation
-            tier_score_mode = "implied"
-            payout_estimate = None
-        else:
-            parlay, tier_activation, tier_co_activation, tier_score_mode, _, payout_estimate = best_choice
-
-        combo_prob = model_parlay_probability(parlay, tier_activation, tier_co_activation) if parlay else 0.0
-        tiers.append(
+    if not combos:
+        return [
             {
-                **tier,
-                "actual_size": len(parlay),
-                "payout_estimate": payout_estimate,
-                "model_joint_prob": combo_prob if combo_prob > 0 else None,
-                "score_mode": tier_score_mode,
-                "residual_requested": residual_requested,
+                **profile,
+                "actual_size": 0,
+                "payout_estimate": None,
+                "model_joint_prob": None,
+                "market_joint_prob": None,
+                "average_edge": None,
+                "average_trust": None,
+                "score_mode": "best_available",
+                "residual_requested": False,
+                "legs": [],
+            }
+            for profile in RECOMMENDATION_PROFILES
+        ]
+
+    used_sets: set[tuple[int, ...]] = set()
+    recommendations: list[dict] = []
+    for profile in RECOMMENDATION_PROFILES:
+        def profile_score(combo: dict) -> float:
+            size = int(combo["actual_size"])
+            payout_estimate = float(combo["payout_estimate"])
+            model_prob = float(combo["model_joint_prob"])
+            avg_edge = float(combo["average_edge"])
+            avg_trust = float(combo["average_trust"])
+            edge_gap = float(combo["edge_gap"])
+            base = float(combo["base_score"])
+            if profile["key"] == "safe":
+                return base + (model_prob * 14.0) + (avg_trust * 2.5) - (max(0.0, payout_estimate - 8.0) * 0.10) - ((size - 2) * 0.22)
+            if profile["key"] == "upside":
+                return base + (edge_gap * 12.0) + (avg_edge * 8.0) + (np.log(max(payout_estimate, 1.01)) * 1.25) - (model_prob * 1.5)
+            return base + (edge_gap * 8.0) + (avg_edge * 6.0) + (model_prob * 4.0) - (abs(size - 3) * 0.18)
+
+        ranked = sorted(combos, key=profile_score, reverse=True)
+        choice = next((combo for combo in ranked if tuple(combo["parlay"]) not in used_sets), None)
+        if choice is None:
+            choice = ranked[0]
+        used_sets.add(tuple(choice["parlay"]))
+        recommendations.append(
+            {
+                **profile,
+                "actual_size": choice["actual_size"],
+                "payout_estimate": choice["payout_estimate"],
+                "model_joint_prob": choice["model_joint_prob"],
+                "market_joint_prob": choice["market_joint_prob"],
+                "average_edge": choice["average_edge"],
+                "average_trust": choice["average_trust"],
+                "score_mode": choice["score_mode"],
+                "residual_requested": False,
                 "legs": [
-                    {
-                        "label": legs[idx].label,
-                        "category": legs[idx].category,
-                        "game": legs[idx].game,
-                        "activation": float(tier_activation[idx]),
-                        "implied_prob": float(legs[idx].implied_prob),
-                        "score_delta": float(tier_activation[idx]) - float(legs[idx].implied_prob),
-                        "trust_score": leg_trust_score(
-                            legs[idx],
-                            float(tier_activation[idx]),
-                            pricing_details.get(idx),
-                        ),
-                        "pricing_source": pricing_details.get(idx, {}).get("pricing_source", tier_score_mode),
-                        "pricing_label": pricing_details.get(idx, {}).get("pricing_label", tier_score_mode.title()),
-                        "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
-                        "notes": legs[idx].notes,
-                    }
-                    for idx in parlay
+                    serialize_leg_summary(
+                        legs[idx],
+                        activation_value=float(activation[idx]),
+                        pricing_meta=pricing_details.get(idx),
+                    )
+                    for idx in choice["parlay"]
                 ],
             }
         )
-    return tiers
+    return recommendations
 
 
 def summarize_from_scores(
@@ -3058,24 +3177,12 @@ def summarize_from_scores(
     for rank, idx in enumerate(ranked[:12], start=1):
         leg = legs[idx]
         top_legs.append(
-            {
-                "rank": rank,
-                "label": leg.label,
-                "category": leg.category,
-                "game": leg.game,
-                "activation": float(activation[idx]),
-                "implied_prob": float(leg.implied_prob),
-                "score_delta": float(activation[idx]) - float(leg.implied_prob),
-                "trust_score": leg_trust_score(
-                    leg,
-                    float(activation[idx]),
-                    pricing_details.get(idx),
-                ),
-                "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
-                "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
-                "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
-                "notes": leg.notes,
-            }
+            serialize_leg_summary(
+                leg,
+                rank=rank,
+                activation_value=float(activation[idx]),
+                pricing_meta=pricing_details.get(idx),
+            )
         )
 
     parlays = []
@@ -3093,18 +3200,11 @@ def summarize_from_scores(
                 "actual_size": len(parlay),
                 "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
                 "legs": [
-                    {
-                        "label": legs[idx].label,
-                        "category": legs[idx].category,
-                        "game": legs[idx].game,
-                        "activation": float(activation[idx]),
-                        "implied_prob": float(legs[idx].implied_prob),
-                        "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
-                        "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
-                        "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
-                        "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
-                        "notes": legs[idx].notes,
-                    }
+                    serialize_leg_summary(
+                        legs[idx],
+                        activation_value=float(activation[idx]),
+                        pricing_meta=pricing_details.get(idx),
+                    )
                     for idx in parlay
                 ],
             }
@@ -3123,44 +3223,20 @@ def summarize_from_scores(
     moonshot = None
     if hr_candidates:
         best_idx = hr_candidates[0]
-        moonshot = {
-            "label": legs[best_idx].label,
-            "category": legs[best_idx].category,
-            "game": legs[best_idx].game,
-            "activation": float(activation[best_idx]),
-            "implied_prob": float(legs[best_idx].implied_prob),
-            "score_delta": float(activation[best_idx]) - float(legs[best_idx].implied_prob),
-            "trust_score": leg_trust_score(
-                legs[best_idx],
-                float(activation[best_idx]),
-                pricing_details.get(best_idx),
-            ),
-            "pricing_source": pricing_details.get(best_idx, {}).get("pricing_source", "market"),
-            "pricing_label": pricing_details.get(best_idx, {}).get("pricing_label", "Market implied"),
-            "pricing_reason": pricing_details.get(best_idx, {}).get("pricing_reason"),
-            "notes": legs[best_idx].notes,
-        }
+        moonshot = serialize_leg_summary(
+            legs[best_idx],
+            activation_value=float(activation[best_idx]),
+            pricing_meta=pricing_details.get(best_idx),
+        )
 
     fades = []
     for idx in ranked[-6:]:
         fades.append(
-            {
-                "label": legs[idx].label,
-                "category": legs[idx].category,
-                "game": legs[idx].game,
-                "activation": float(activation[idx]),
-                "implied_prob": float(legs[idx].implied_prob),
-                "score_delta": float(activation[idx]) - float(legs[idx].implied_prob),
-                "trust_score": leg_trust_score(
-                    legs[idx],
-                    float(activation[idx]),
-                    pricing_details.get(idx),
-                ),
-                "pricing_source": pricing_details.get(idx, {}).get("pricing_source", "market"),
-                "pricing_label": pricing_details.get(idx, {}).get("pricing_label", "Market implied"),
-                "pricing_reason": pricing_details.get(idx, {}).get("pricing_reason"),
-                "notes": legs[idx].notes,
-            }
+            serialize_leg_summary(
+                legs[idx],
+                activation_value=float(activation[idx]),
+                pricing_meta=pricing_details.get(idx),
+            )
         )
 
     return {
@@ -3217,14 +3293,11 @@ def summarize_results(
     for rank, idx in enumerate(ranked[:12], start=1):
         leg = legs[idx]
         top_legs.append(
-            {
-                "rank": rank,
-                "label": leg.label,
-                "category": leg.category,
-                "game": leg.game,
-                "activation": float(activation[idx]),
-                "notes": leg.notes,
-            }
+            serialize_leg_summary(
+                leg,
+                rank=rank,
+                activation_value=float(activation[idx]),
+            )
         )
 
     parlays = []
@@ -3242,13 +3315,10 @@ def summarize_results(
                 "actual_size": len(parlay),
                 "payout_estimate": (1.0 / combo_prob) if combo_prob > 0 else None,
                 "legs": [
-                    {
-                        "label": legs[idx].label,
-                        "category": legs[idx].category,
-                        "game": legs[idx].game,
-                        "activation": float(activation[idx]),
-                        "notes": legs[idx].notes,
-                    }
+                    serialize_leg_summary(
+                        legs[idx],
+                        activation_value=float(activation[idx]),
+                    )
                     for idx in parlay
                 ],
             }
@@ -3260,24 +3330,18 @@ def summarize_results(
     moonshot = None
     if hr_candidates:
         best_idx = hr_candidates[0]
-        moonshot = {
-            "label": legs[best_idx].label,
-            "category": legs[best_idx].category,
-            "game": legs[best_idx].game,
-            "activation": float(activation[best_idx]),
-            "notes": legs[best_idx].notes,
-        }
+        moonshot = serialize_leg_summary(
+            legs[best_idx],
+            activation_value=float(activation[best_idx]),
+        )
 
     fades = []
     for idx in ranked[-6:]:
         fades.append(
-            {
-                "label": legs[idx].label,
-                "category": legs[idx].category,
-                "game": legs[idx].game,
-                "activation": float(activation[idx]),
-                "notes": legs[idx].notes,
-            }
+            serialize_leg_summary(
+                legs[idx],
+                activation_value=float(activation[idx]),
+            )
         )
 
     return {
@@ -3422,7 +3486,7 @@ def run_oracle(
                 "Live matchup simulation"
                 if score_source == "sim"
                 else (
-                    "MLB residual market scoring (Cash tier only)"
+                    "MLB residual market scoring (conservative recommendation bias)"
                     if score_source == "residual"
                     else "Direct heuristic market scoring"
                 )
@@ -3581,7 +3645,7 @@ def main() -> None:
     elif args.score_source == "sim":
         print("Simulation mode: live matchup model for MLB/NBA moneylines, totals, and supported player props")
     elif args.score_source == "residual":
-        print("Hybrid market mode: MLB residuals for Cash tier, implied prices elsewhere")
+        print("Hybrid market mode: MLB residuals for conservative recommendations, implied prices elsewhere")
     else:
         print("Default market mode: state search over implied probabilities plus heuristics")
     print()

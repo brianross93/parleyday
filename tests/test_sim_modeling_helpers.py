@@ -10,6 +10,7 @@ from quantum_parlay_oracle import (
     leg_moneyline_side,
     nba_team_form_is_usable,
     nba_stat_dispersion,
+    nba_roster_offense_penalty,
     parse_mlb_prop_label,
     parse_nba_prop_label,
     partial_state_score,
@@ -79,6 +80,21 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertGreater(with_star_out["Bench Guard"]["minutes"], healthy["Bench Guard"]["minutes"])
         self.assertLessEqual(sum(player["minutes"] for player in with_star_out.values()), 240.0 + 1e-6)
 
+    def test_project_nba_player_means_matches_last_first_injury_names(self) -> None:
+        profiles = [
+            {"name": "Giannis Antetokounmpo", "minutes": 35.0, "points": 30.0, "rebounds": 12.0, "assists": 6.0},
+            {"name": "Damian Lillard", "minutes": 36.0, "points": 27.0, "rebounds": 4.0, "assists": 7.0},
+            {"name": "Bench Wing", "minutes": 18.0, "points": 8.0, "rebounds": 3.0, "assists": 1.0},
+        ]
+        projected = project_nba_player_means(
+            profiles,
+            team_total=108.0,
+            availability_entries=[{"player_name": "Antetokounmpo, Giannis", "status": "Out"}],
+        )
+
+        self.assertNotIn("Giannis Antetokounmpo", projected)
+        self.assertIn("Damian Lillard", projected)
+
     def test_build_live_nba_team_context_uses_projected_minutes(self) -> None:
         context = build_live_nba_team_context(
             "MIL",
@@ -86,6 +102,13 @@ class SimModelingHelperTests(unittest.TestCase):
                 {"name": "Guard One", "minutes": 34.0, "points": 24.0, "rebounds": 5.0, "assists": 7.0, "games_sample": 8.0},
                 {"name": "Wing Two", "minutes": 32.0, "points": 18.0, "rebounds": 6.0, "assists": 4.0, "games_sample": 8.0},
                 {"name": "Big Three", "minutes": 30.0, "points": 16.0, "rebounds": 10.0, "assists": 2.0, "games_sample": 8.0},
+                {"name": "Forward Four", "minutes": 28.0, "points": 14.0, "rebounds": 7.0, "assists": 3.0, "games_sample": 8.0},
+                {"name": "Center Five", "minutes": 27.0, "points": 13.0, "rebounds": 9.0, "assists": 2.0, "games_sample": 8.0},
+                {"name": "Guard Six", "minutes": 22.0, "points": 10.0, "rebounds": 3.0, "assists": 4.0, "games_sample": 8.0},
+                {"name": "Wing Seven", "minutes": 20.0, "points": 9.0, "rebounds": 4.0, "assists": 2.0, "games_sample": 8.0},
+                {"name": "Big Eight", "minutes": 18.0, "points": 8.0, "rebounds": 6.0, "assists": 1.0, "games_sample": 8.0},
+                {"name": "Guard Nine", "minutes": 16.0, "points": 7.0, "rebounds": 2.0, "assists": 3.0, "games_sample": 8.0},
+                {"name": "Wing Ten", "minutes": 14.0, "points": 6.0, "rebounds": 3.0, "assists": 1.0, "games_sample": 8.0},
             ],
             114.0,
             [{"player_name": "Guard One", "status": "Questionable"}],
@@ -94,6 +117,49 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(context.code, "MIL")
         self.assertAlmostEqual(context.expected_points, 114.0)
         self.assertTrue(any(player.minutes > 0 for player in context.players))
+
+    def test_build_live_nba_team_context_penalizes_short_rotation(self) -> None:
+        short_rotation_profiles = [
+            {"name": f"Player {idx}", "minutes": 24.0 + (idx % 3), "points": 10.0 + idx, "rebounds": 4.0, "assists": 2.0, "games_sample": 8.0}
+            for idx in range(8)
+        ]
+        full_rotation_profiles = short_rotation_profiles + [
+            {"name": "Player 8", "minutes": 16.0, "points": 7.0, "rebounds": 3.0, "assists": 2.0, "games_sample": 8.0},
+            {"name": "Player 9", "minutes": 14.0, "points": 6.0, "rebounds": 2.0, "assists": 1.0, "games_sample": 8.0},
+        ]
+
+        short_context = build_live_nba_team_context("MIL", short_rotation_profiles, 112.0, [])
+        full_context = build_live_nba_team_context("MIL", full_rotation_profiles, 112.0, [])
+
+        self.assertIsNotNone(short_context)
+        self.assertIsNotNone(full_context)
+        self.assertLess(short_context.expected_points, full_context.expected_points)
+        self.assertEqual(len(short_context.players), 8)
+
+    def test_nba_roster_offense_penalty_grows_for_star_out_and_short_bench(self) -> None:
+        healthy_profiles = [
+            {"name": "Giannis Antetokounmpo", "minutes": 35.0, "points": 30.0, "rebounds": 12.0, "assists": 6.0},
+            {"name": "Damian Lillard", "minutes": 36.0, "points": 27.0, "rebounds": 4.0, "assists": 7.0},
+            {"name": "Kyle Kuzma", "minutes": 31.0, "points": 17.0, "rebounds": 7.0, "assists": 3.0},
+            {"name": "Brook Lopez", "minutes": 30.0, "points": 13.0, "rebounds": 6.0, "assists": 2.0},
+            {"name": "Taurean Prince", "minutes": 28.0, "points": 9.0, "rebounds": 4.0, "assists": 2.0},
+            {"name": "Bench 1", "minutes": 22.0, "points": 8.0, "rebounds": 3.0, "assists": 2.0},
+            {"name": "Bench 2", "minutes": 19.0, "points": 7.0, "rebounds": 3.0, "assists": 2.0},
+            {"name": "Bench 3", "minutes": 16.0, "points": 6.0, "rebounds": 2.0, "assists": 1.0},
+            {"name": "Bench 4", "minutes": 14.0, "points": 5.0, "rebounds": 2.0, "assists": 1.0},
+            {"name": "Bench 5", "minutes": 12.0, "points": 4.0, "rebounds": 1.0, "assists": 1.0},
+        ]
+        short_profiles = healthy_profiles[:8]
+
+        healthy_penalty = nba_roster_offense_penalty(healthy_profiles, [])
+        giannis_out_penalty = nba_roster_offense_penalty(
+            healthy_profiles,
+            [{"player_name": "Antetokounmpo, Giannis", "status": "Out"}],
+        )
+        short_penalty = nba_roster_offense_penalty(short_profiles, [])
+
+        self.assertGreater(giannis_out_penalty, healthy_penalty + 4.0)
+        self.assertGreater(short_penalty, healthy_penalty)
 
     def test_nba_possession_simulator_generates_player_distributions(self) -> None:
         away = NBATeamContext(
@@ -151,6 +217,33 @@ class SimModelingHelperTests(unittest.TestCase):
                 [Leg(0, "Someone Else O 5 AST", "prop", "LAC@MIL", 0.5, "notes", "nba")],
             )
         self.assertEqual(probabilities, {})
+
+    def test_live_nba_sim_applies_out_override_for_last_first_injury_name(self) -> None:
+        with patch(
+            "quantum_parlay_oracle.load_nba_matchup_profile_snapshot",
+            return_value={
+                "away_profiles": [
+                    {"name": "Giannis Antetokounmpo", "minutes": 35.0, "points": 30.0, "rebounds": 12.0, "assists": 6.0, "games_sample": 8.0},
+                    {"name": "Damian Lillard", "minutes": 36.0, "points": 27.0, "rebounds": 4.0, "assists": 7.0, "games_sample": 8.0},
+                ],
+                "home_profiles": [
+                    {"name": "Kawhi Leonard", "minutes": 35.0, "points": 27.0, "rebounds": 6.0, "assists": 5.0, "games_sample": 8.0}
+                ],
+            },
+        ), patch(
+            "quantum_parlay_oracle.load_game_context_snapshot",
+            return_value={"availability": {"away": [{"player_name": "Antetokounmpo, Giannis", "status": "Out"}], "home": []}},
+        ), patch(
+            "quantum_parlay_oracle.load_team_form_snapshot",
+            return_value={"MIL": {"net_rating_proxy": 0.0}, "LAC": {"net_rating_proxy": 4.0}},
+        ):
+            probabilities = simulate_live_nba_leg_probabilities(
+                "MIL@LAC",
+                "2026-03-29",
+                [Leg(0, "Giannis Antetokounmpo O 29 PTS", "prop", "MIL@LAC", 0.5, "notes", "nba")],
+            )
+
+        self.assertEqual(probabilities["Giannis Antetokounmpo O 29 PTS"], 0.0)
 
     def test_nba_dispersion_reflects_uncertainty(self) -> None:
         stable = nba_stat_dispersion(
@@ -224,6 +317,36 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(result["summary"]["samples_collected"], 0)
         self.assertEqual(result["top_legs"], [])
         self.assertEqual(result["tier_parlays"], [])
+
+    def test_summarize_results_includes_market_fields_on_all_leg_views(self) -> None:
+        legs = [
+            Leg(0, "Team A ML", "ml", "AAA@BBB", 0.58, "notes a", "mlb"),
+            Leg(1, "Slugger O 1 HR", "prop", "CCC@DDD", 0.22, "notes b", "mlb"),
+        ]
+        samples = np.array([[1.0, -1.0], [1.0, 1.0], [-1.0, -1.0]], dtype=np.float64)
+
+        result = summarize_results(
+            legs=legs,
+            samples=samples,
+            qrng=QuantumEntropySource(n_bytes=1024, fallback=True),
+            slate_mode="cached",
+            loader_meta={"target_date": "2026-03-28", "games": 2, "pricing_summary": {"market": 2}},
+        )
+
+        for bucket_name in ("top_legs", "fades"):
+            for leg in result[bucket_name]:
+                self.assertIn("implied_prob", leg)
+                self.assertIn("score_delta", leg)
+                self.assertIn("trust_score", leg)
+        if result["moonshot"] is not None:
+            self.assertIn("implied_prob", result["moonshot"])
+            self.assertIn("score_delta", result["moonshot"])
+            self.assertIn("trust_score", result["moonshot"])
+        for parlay in result["parlays"]:
+            for leg in parlay["legs"]:
+                self.assertIn("implied_prob", leg)
+                self.assertIn("score_delta", leg)
+                self.assertIn("trust_score", leg)
 
     def test_direct_activation_handles_empty_legs(self) -> None:
         activation, co_activation, pricing = direct_activation_and_coactivation([], "implied")
@@ -299,7 +422,7 @@ class SimModelingHelperTests(unittest.TestCase):
             )
         )
 
-    def test_tiered_parlays_require_positive_edge_and_target_payout(self) -> None:
+    def test_recommended_parlays_return_ranked_best_available_combos(self) -> None:
         legs = [
             Leg(0, "A ML", "ml", "A@B", 0.78, "notes", "nba"),
             Leg(1, "C ML", "ml", "C@D", 0.76, "notes", "nba"),
@@ -324,13 +447,14 @@ class SimModelingHelperTests(unittest.TestCase):
             pricing_details=pricing_details,
         )
 
-        cash = next(tier for tier in tiers if tier["key"] == "cash")
-        self.assertTrue(cash["legs"])
-        self.assertTrue(all(leg["score_delta"] > 0 for leg in cash["legs"]))
-        self.assertGreaterEqual(cash["payout_estimate"], cash["target_payout_min"])
-        self.assertLessEqual(cash["payout_estimate"], cash["target_payout_max"])
+        self.assertEqual([tier["key"] for tier in tiers], ["best", "safe", "upside"])
+        best = next(tier for tier in tiers if tier["key"] == "best")
+        self.assertTrue(best["legs"])
+        self.assertGreater(best["payout_estimate"], 1.0)
+        self.assertGreater(best["model_joint_prob"], 0.0)
+        self.assertGreaterEqual(best["average_edge"], 0.0)
 
-    def test_cash_tier_avoids_same_game_stacks(self) -> None:
+    def test_recommended_parlays_avoid_same_game_stacks_in_best_profile(self) -> None:
         legs = [
             Leg(0, "AAA ML", "ml", "AAA@BBB", 0.72, "notes", "mlb"),
             Leg(1, "AAA@BBB O5.5", "total", "AAA@BBB", 0.72, "notes", "mlb"),
@@ -350,9 +474,37 @@ class SimModelingHelperTests(unittest.TestCase):
             co_activation=co_activation,
             pricing_details=pricing_details,
         )
-        cash = next(tier for tier in tiers if tier["key"] == "cash")
-        games = [leg["game"] for leg in cash["legs"]]
+        best = next(tier for tier in tiers if tier["key"] == "best")
+        games = [leg["game"] for leg in best["legs"]]
         self.assertEqual(len(games), len(set(games)))
+
+    def test_upside_recommendation_can_keep_high_payout_parlay(self) -> None:
+        legs = [
+            Leg(0, "A ML", "ml", "A@B", 0.30, "notes", "mlb"),
+            Leg(1, "C ML", "ml", "C@D", 0.29, "notes", "mlb"),
+            Leg(2, "E ML", "ml", "E@F", 0.28, "notes", "mlb"),
+            Leg(3, "G ML", "ml", "G@H", 0.27, "notes", "mlb"),
+            Leg(4, "I ML", "ml", "I@J", 0.26, "notes", "mlb"),
+            Leg(5, "K ML", "ml", "K@L", 0.25, "notes", "mlb"),
+        ]
+        activation = np.array([0.49, 0.48, 0.47, 0.46, 0.45, 0.44], dtype=np.float64)
+        co_activation = np.outer(activation, activation)
+        np.fill_diagonal(co_activation, activation)
+        pricing_details = {
+            idx: {"pricing_source": "simulation", "pricing_label": "Monte Carlo"} for idx in range(len(legs))
+        }
+
+        tiers = build_tiered_parlays(
+            legs=legs,
+            activation=activation,
+            co_activation=co_activation,
+            pricing_details=pricing_details,
+        )
+
+        upside = next(tier for tier in tiers if tier["key"] == "upside")
+        self.assertTrue(upside["legs"])
+        self.assertGreater(upside["payout_estimate"], 100.0)
+        self.assertGreater(upside["model_joint_prob"], upside["market_joint_prob"])
 
 
 if __name__ == "__main__":

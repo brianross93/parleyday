@@ -7,6 +7,7 @@ from typing import Any
 import requests
 from pypdf import PdfReader
 
+from env_config import load_local_env
 from data_pipeline import (
     SnapshotStore,
     build_batter_profile_payload,
@@ -20,6 +21,8 @@ from quantum_parlay_oracle import (
     fetch_live_nba_team_form,
     load_live_legs,
 )
+
+load_local_env()
 
 
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -38,6 +41,15 @@ NBA_PLAYER_STATUS_RE = re.compile(
     r"(?P<status>Out|Questionable|Probable|Doubtful|Available)\s*"
 )
 MLB_TRANSACTIONS_URL = "https://statsapi.mlb.com/api/v1/transactions"
+
+
+def fetch_mlb_player_hand(player_id: int, hand_key: str = "pitchHand") -> str:
+    response = requests.get(f"https://statsapi.mlb.com/api/v1/people/{player_id}", timeout=20)
+    response.raise_for_status()
+    people = response.json().get("people", [])
+    if not people:
+        return "R"
+    return str((people[0].get(hand_key) or {}).get("code") or "R")
 
 
 def normalize_mlb_transaction(item: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +137,7 @@ def fetch_mlb_bullpen_snapshot(team_id: int, date_str: str, lookback_days: int =
     )
     response.raise_for_status()
     appearances: dict[int, dict[str, Any]] = {}
+    hand_cache: dict[int, str] = {}
     for date_block in response.json().get("dates", []):
         for game in date_block.get("games", []):
             if game.get("status", {}).get("detailedState") != "Final":
@@ -142,7 +155,9 @@ def fetch_mlb_bullpen_snapshot(team_id: int, date_str: str, lookback_days: int =
                 info = appearances.setdefault(
                     int(pitcher_id),
                     {
+                        "player_id": int(pitcher_id),
                         "player_name": player.get("person", {}).get("fullName", ""),
+                        "hand": hand_cache.setdefault(int(pitcher_id), fetch_mlb_player_hand(int(pitcher_id))),
                         "appearances": 0,
                         "pitches_last_3_days": 0,
                         "last_game_date": None,
@@ -432,25 +447,49 @@ def cache_nba_matchup_profiles(store: SnapshotStore, date_str: str, contexts: li
     return cached_count
 
 
-def latest_nba_injury_report_pdf_url(date_str: str) -> str | None:
+def latest_nba_injury_report_pdf_details(date_str: str) -> dict[str, Any] | None:
     try:
         html = requests.get(NBA_INJURY_REPORT_INDEX_URL, timeout=FAST_TIMEOUT_SECONDS).text
-        candidates = []
+        exact_candidates = []
+        fallback_candidates = []
         for match in NBA_INJURY_REPORT_PDF_RE.finditer(html):
             report_date, hour, minute, meridiem = match.groups()
-            if report_date != date_str:
-                continue
             hour_24 = int(hour) % 12
             if meridiem == "PM":
                 hour_24 += 12
-            sort_key = (hour_24, int(minute))
-            candidates.append((sort_key, match.group(0)))
-        if candidates:
-            candidates.sort()
-            return candidates[-1][1]
+            sort_key = (report_date, hour_24, int(minute))
+            item = {
+                "report_url": match.group(0),
+                "report_date": report_date,
+                "report_time": f"{hour}:{minute}{meridiem}",
+                "is_stale": report_date != date_str,
+            }
+            if report_date == date_str:
+                exact_candidates.append((sort_key, item))
+            elif report_date < date_str:
+                fallback_candidates.append((sort_key, item))
+        if exact_candidates:
+            exact_candidates.sort()
+            return exact_candidates[-1][1]
+        if fallback_candidates:
+            fallback_candidates.sort()
+            return fallback_candidates[-1][1]
     except Exception:
         pass
-    return probe_nba_injury_report_pdf_url(date_str)
+    probed_url = probe_nba_injury_report_pdf_url(date_str)
+    if probed_url:
+        return {
+            "report_url": probed_url,
+            "report_date": date_str,
+            "report_time": None,
+            "is_stale": False,
+        }
+    return None
+
+
+def latest_nba_injury_report_pdf_url(date_str: str) -> str | None:
+    details = latest_nba_injury_report_pdf_details(date_str)
+    return str(details.get("report_url")) if details else None
 
 
 def probe_nba_injury_report_pdf_url(date_str: str, max_attempts: int = NBA_INJURY_PROBE_ATTEMPTS) -> str | None:
@@ -579,6 +618,77 @@ def fetch_nba_injury_context(date_str: str, contexts: list[dict[str, Any]]) -> d
     return parse_nba_injury_report(text, contexts, report_url)
 
 
+def fetch_nba_injury_context_details(date_str: str, contexts: list[dict[str, Any]]) -> dict[str, Any]:
+    report_details = latest_nba_injury_report_pdf_details(date_str)
+    if report_details is None:
+        return {
+            "status": "missing",
+            "message": "No NBA injury report PDF was found for this date.",
+            "report_url": None,
+            "report_date": None,
+            "is_stale": False,
+            "matched_matchups": 0,
+            "expected_matchups": len(contexts),
+            "submitted_teams": 0,
+            "expected_teams": len(contexts) * 2,
+            "parsed": {},
+        }
+    report_url = str(report_details["report_url"])
+    try:
+        text = extract_pdf_text(report_url)
+    except Exception as exc:
+        return {
+            "status": "download_error",
+            "message": f"Failed to download or parse the NBA injury report PDF: {exc}",
+            "report_url": report_url,
+            "report_date": report_details.get("report_date"),
+            "is_stale": bool(report_details.get("is_stale")),
+            "matched_matchups": 0,
+            "expected_matchups": len(contexts),
+            "submitted_teams": 0,
+            "expected_teams": len(contexts) * 2,
+            "parsed": {},
+        }
+    parsed = parse_nba_injury_report(text, contexts, report_url)
+    submitted_teams = 0
+    for matchup in parsed.values():
+        availability = matchup.get("availability") or {}
+        for side in ("away", "home"):
+            if (availability.get(side) or {}).get("submitted"):
+                submitted_teams += 1
+    status = "ok" if parsed else "unmatched"
+    if report_details.get("is_stale"):
+        status = "stale_ok" if parsed else "stale_unmatched"
+    if parsed:
+        if report_details.get("is_stale"):
+            message = (
+                f"Using the latest prior NBA injury report from {report_details.get('report_date')} "
+                "because the current slate date PDF was not available."
+            )
+        else:
+            message = "NBA injury report fetched and parsed."
+    else:
+        if report_details.get("is_stale"):
+            message = (
+                f"Using the latest prior NBA injury report from {report_details.get('report_date')}, "
+                "but no slate matchups were matched in the parsed PDF."
+            )
+        else:
+            message = "NBA injury report was found, but no slate matchups were matched in the parsed PDF."
+    return {
+        "status": status,
+        "message": message,
+        "report_url": report_url,
+        "report_date": report_details.get("report_date"),
+        "is_stale": bool(report_details.get("is_stale")),
+        "matched_matchups": len(parsed),
+        "expected_matchups": len(contexts),
+        "submitted_teams": submitted_teams,
+        "expected_teams": len(contexts) * 2,
+        "parsed": parsed,
+    }
+
+
 def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) -> dict:
     store = SnapshotStore(db_path)
     sports = ["mlb", "nba"] if sport == "both" else [sport]
@@ -642,10 +752,30 @@ def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) ->
             )
             nba_contexts = fetch_nba_game_contexts(date_str)
             injury_context = {}
+            injury_status = {
+                "status": "missing",
+                "message": "NBA injury refresh did not run.",
+                "report_url": None,
+                "matched_matchups": 0,
+                "expected_matchups": len(nba_contexts),
+                "submitted_teams": 0,
+                "expected_teams": len(nba_contexts) * 2,
+            }
             try:
-                injury_context = fetch_nba_injury_context(date_str, nba_contexts)
-            except Exception:
+                injury_details = fetch_nba_injury_context_details(date_str, nba_contexts)
+                injury_context = injury_details.get("parsed", {})
+                injury_status = {key: value for key, value in injury_details.items() if key != "parsed"}
+            except Exception as exc:
                 injury_context = {}
+                injury_status = {
+                    "status": "error",
+                    "message": f"NBA injury refresh failed: {exc}",
+                    "report_url": None,
+                    "matched_matchups": 0,
+                    "expected_matchups": len(nba_contexts),
+                    "submitted_teams": 0,
+                    "expected_teams": len(nba_contexts) * 2,
+                }
             for context in nba_contexts:
                 parsed = injury_context.get(context["matchup"])
                 if parsed is not None:
@@ -668,6 +798,7 @@ def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) ->
                     is_volatile=True,
                 )
             player_profile_count += cache_nba_matchup_profiles(store, date_str, nba_contexts)
+            meta["nba_injury_report"] = injury_status
 
     store.upsert_snapshot(
         source="kalshi",
@@ -692,6 +823,7 @@ def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) ->
         "game_contexts": context_count,
         "player_profiles": player_profile_count,
         "leg_refresh_error": leg_refresh_error,
+        "nba_injury_report": meta.get("nba_injury_report"),
     }
 
 

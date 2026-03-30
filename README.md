@@ -57,6 +57,37 @@ Open:
 http://127.0.0.1:5000
 ```
 
+### Optional OpenAI Judgment Layer
+
+The dashboard can run an extra OpenAI judgment pass after the slate summary is built. This is intended as a final review layer over:
+
+- the recommended parlays
+- the top edge list
+- cached lineup, injury, bullpen, and matchup context
+
+Set your API key through the standard environment variable:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+On Windows PowerShell for the current session:
+
+```powershell
+$env:OPENAI_API_KEY="sk-..."
+```
+
+Or copy [.env.example](C:\Users\brssn\OneDrive\Desktop\parleysubstrate\.env.example) to `.env` in the repo root and set the values there. The app now loads `.env` automatically on startup.
+
+Optional overrides:
+
+```bash
+export PARLEYDAY_LLM_MODEL="gpt-5.4"
+export PARLEYDAY_LLM_REASONING_EFFORT="medium"
+```
+
+The default is `gpt-5.4`. If you want a different model id, override it in the dashboard form or with `PARLEYDAY_LLM_MODEL`.
+
 Recommended usage pattern:
 
 1. Run a baseline ingest in the morning.

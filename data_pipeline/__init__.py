@@ -4,6 +4,7 @@ from .mlb_profiles import (
     BATTER_PROFILE_FIELDS,
     PITCHER_PROFILE_FIELDS,
     build_batter_profile_payload,
+    build_bullpen_profiles_payload,
     build_pitcher_profile_payload,
     team_context_from_cached_payload,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "BATTER_PROFILE_FIELDS",
     "PITCHER_PROFILE_FIELDS",
     "build_batter_profile_payload",
+    "build_bullpen_profiles_payload",
     "build_pitcher_profile_payload",
     "team_context_from_cached_payload",
     "fetch_nba_team_player_profiles",

@@ -3,3 +3,4 @@ numpy>=2.0,<3.0
 requests>=2.31,<3.0
 MLB-StatsAPI>=1.9,<2.0
 pypdf>=6.0,<7.0
+openai>=1.0,<2.0

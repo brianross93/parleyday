@@ -43,6 +43,8 @@ class BatterProfile:
     triple_rate: float
     home_run_rate: float
     speed_factor: float = 1.0
+    vs_left_factor: float = 1.0
+    vs_right_factor: float = 1.0
 
     def event_rates(self) -> dict[str, float]:
         return {
@@ -88,6 +90,7 @@ class TeamContext:
     team_code: str
     lineup: tuple[BatterProfile, ...]
     starter: PitcherProfile
+    bullpen: tuple[PitcherProfile, ...] = ()
     park_hit_factor: float = 1.0
     park_hr_factor: float = 1.0
     offense_factor: float = 1.0
@@ -181,8 +184,9 @@ class MLBGameSimulator:
             for stat in ("hits", "home_runs", "walks", "strikeouts", "runs", "rbi", "total_bases", "plate_appearances")
         }
         for team in (away, home):
-            for stat in ("strikeouts", "walks", "hits_allowed", "earned_runs"):
-                tracked_stats[(team.starter.name, stat)] = []
+            for pitcher in (team.starter,) + tuple(team.bullpen):
+                for stat in ("strikeouts", "walks", "hits_allowed", "earned_runs"):
+                    tracked_stats[(pitcher.name, stat)] = []
 
         for _ in range(n):
             game = self._simulate_single_game(away, home)
@@ -249,7 +253,15 @@ class MLBGameSimulator:
     def _simulate_single_game(self, away: TeamContext, home: TeamContext) -> dict:
         scoreboard = {"away": 0, "home": 0}
         batter_index = {"away": 0, "home": 0}
-        pitch_count = {away.starter.name: 0, home.starter.name: 0}
+        pitch_count = {
+            pitcher.name: 0
+            for team in (away, home)
+            for pitcher in ((team.starter,) + tuple(team.bullpen))
+        }
+        staff_state = {
+            "away": {"current": away.starter, "bullpen_index": 0},
+            "home": {"current": home.starter, "bullpen_index": 0},
+        }
         lines = {
             (player.name, stat): 0
             for team in (away, home)
@@ -257,8 +269,9 @@ class MLBGameSimulator:
             for stat in ("hits", "home_runs", "walks", "strikeouts", "runs", "rbi", "total_bases", "plate_appearances")
         }
         for team in (away, home):
-            for stat in ("strikeouts", "walks", "hits_allowed", "earned_runs"):
-                lines[(team.starter.name, stat)] = 0
+            for pitcher in (team.starter,) + tuple(team.bullpen):
+                for stat in ("strikeouts", "walks", "hits_allowed", "earned_runs"):
+                    lines[(pitcher.name, stat)] = 0
 
         inning = 1
         while True:
@@ -266,11 +279,12 @@ class MLBGameSimulator:
                 offense=away,
                 defense=home,
                 batting_key="away",
+                defense_key="home",
                 inning=inning,
                 batter_index=batter_index,
                 pitch_count=pitch_count,
+                staff_state=staff_state,
                 player_lines=lines,
-                pitcher_name=home.starter.name,
             )
             if inning >= self.config.innings and scoreboard["home"] > scoreboard["away"]:
                 break
@@ -279,11 +293,12 @@ class MLBGameSimulator:
                 offense=home,
                 defense=away,
                 batting_key="home",
+                defense_key="away",
                 inning=inning,
                 batter_index=batter_index,
                 pitch_count=pitch_count,
+                staff_state=staff_state,
                 player_lines=lines,
-                pitcher_name=away.starter.name,
                 walk_off_enabled=inning >= self.config.innings,
                 current_home_score=scoreboard["home"],
                 current_away_score=scoreboard["away"],
@@ -305,11 +320,12 @@ class MLBGameSimulator:
         offense: TeamContext,
         defense: TeamContext,
         batting_key: str,
+        defense_key: str,
         inning: int,
         batter_index: dict[str, int],
         pitch_count: dict[str, int],
+        staff_state: dict[str, dict[str, object]],
         player_lines: dict[tuple[str, str], int],
-        pitcher_name: str,
         walk_off_enabled: bool = False,
         current_home_score: int = 0,
         current_away_score: int = 0,
@@ -323,19 +339,47 @@ class MLBGameSimulator:
             batter = offense.lineup[batter_index[batting_key] % len(offense.lineup)]
             batter_index[batting_key] += 1
             player_lines[(batter.name, "plate_appearances")] = player_lines.get((batter.name, "plate_appearances"), 0) + 1
+            pitcher = self._current_pitcher(defense=defense, defense_key=defense_key, inning=inning, pitch_count=pitch_count, staff_state=staff_state)
             outcome = self._resolve_plate_appearance(
                 batter=batter,
-                pitcher=defense.starter,
+                pitcher=pitcher,
                 park_hit_factor=offense.park_hit_factor,
                 park_hr_factor=offense.park_hr_factor,
                 offense_factor=offense.offense_factor,
-                pitch_count=pitch_count[pitcher_name],
+                pitch_count=pitch_count[pitcher.name],
             )
-            pitch_count[pitcher_name] += self._pitch_count_delta(outcome)
-            runs += self._apply_outcome(batter.name, pitcher_name, outcome, state, player_lines)
+            pitch_count[pitcher.name] += self._pitch_count_delta(outcome)
+            runs += self._apply_outcome(batter.name, pitcher.name, outcome, state, player_lines)
             if walk_off_enabled and batting_key == "home" and current_home_score + runs > current_away_score:
                 break
         return runs
+
+    def _current_pitcher(
+        self,
+        *,
+        defense: TeamContext,
+        defense_key: str,
+        inning: int,
+        pitch_count: dict[str, int],
+        staff_state: dict[str, dict[str, object]],
+    ) -> PitcherProfile:
+        state = staff_state[defense_key]
+        current = state["current"]
+        assert isinstance(current, PitcherProfile)
+        bullpen_index = int(state["bullpen_index"])
+        should_switch = False
+        if current.name == defense.starter.name:
+            if pitch_count[current.name] >= current.fatigue_full:
+                should_switch = True
+            elif inning >= 7 and pitch_count[current.name] >= current.fatigue_start:
+                should_switch = True
+        elif pitch_count[current.name] >= current.fatigue_full:
+            should_switch = True
+        if should_switch and bullpen_index < len(defense.bullpen):
+            current = defense.bullpen[bullpen_index]
+            state["current"] = current
+            state["bullpen_index"] = bullpen_index + 1
+        return current
 
     def _resolve_plate_appearance(
         self,
@@ -350,9 +394,18 @@ class MLBGameSimulator:
         batter_rates = batter.event_rates()
         pitcher_rates = pitcher.event_rates()
         fatigue = self._fatigue_multiplier(pitch_count, pitcher)
+        split_factor = batter.vs_left_factor if pitcher.hand == "L" else batter.vs_right_factor if pitcher.hand == "R" else 1.0
 
         for outcome in LEAGUE_RATES:
             base = batter_rates[outcome] * pitcher_rates[outcome] / LEAGUE_RATES[outcome]
+            if outcome == "k":
+                base *= float(np.clip(1.0 + ((1.0 - split_factor) * 0.55), 0.82, 1.18))
+            elif outcome == "bb":
+                base *= float(np.clip(1.0 + ((split_factor - 1.0) * 0.30), 0.88, 1.12))
+            elif outcome == "hr":
+                base *= float(np.clip(1.0 + ((split_factor - 1.0) * 0.80), 0.78, 1.24))
+            elif outcome in {"single", "double", "triple"}:
+                base *= float(np.clip(1.0 + ((split_factor - 1.0) * 0.60), 0.82, 1.18))
             if outcome == "hr":
                 base *= park_hr_factor * fatigue * offense_factor
             elif outcome in {"single", "double", "triple"}:
