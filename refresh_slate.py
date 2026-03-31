@@ -43,6 +43,57 @@ NBA_PLAYER_STATUS_RE = re.compile(
 MLB_TRANSACTIONS_URL = "https://statsapi.mlb.com/api/v1/transactions"
 
 
+def fetch_last_mlb_lineup(team_id: int, date_str: str, lookback_days: int = 14) -> list[dict[str, Any]]:
+    target_date = datetime.strptime(date_str, "%Y-%m-%d")
+    start_date = (target_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    response = requests.get(
+        MLB_SCHEDULE_URL,
+        params={
+            "sportId": 1,
+            "teamId": team_id,
+            "startDate": start_date,
+            "endDate": date_str,
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    games = []
+    for date_block in response.json().get("dates", []):
+        for game in date_block.get("games", []):
+            if game.get("status", {}).get("detailedState") != "Final":
+                continue
+            official_date = str(game.get("officialDate") or "")
+            if official_date and official_date >= date_str:
+                continue
+            games.append(game)
+    games.sort(key=lambda item: str(item.get("officialDate") or ""), reverse=True)
+    for game in games:
+        game_pk = game.get("gamePk")
+        if not game_pk:
+            continue
+        feed = requests.get(f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live", timeout=20).json()
+        teams = (feed.get("liveData", {}).get("boxscore", {}) or {}).get("teams", {})
+        away_team_id = ((feed.get("gameData", {}).get("teams", {}) or {}).get("away", {}) or {}).get("id")
+        side = "away" if away_team_id == team_id else "home"
+        players = ((teams.get(side) or {}).get("players") or {})
+        lineup = []
+        for player in players.values():
+            batting_order = str(player.get("battingOrder") or "").strip()
+            if not batting_order:
+                continue
+            lineup.append(
+                {
+                    "id": player.get("person", {}).get("id"),
+                    "fullName": player.get("person", {}).get("fullName", ""),
+                    "battingOrder": batting_order,
+                }
+            )
+        if lineup:
+            lineup.sort(key=lambda item: int(str(item.get("battingOrder") or "999")))
+            return lineup[:9]
+    return []
+
+
 def fetch_mlb_player_hand(player_id: int, hand_key: str = "pitchHand") -> str:
     response = requests.get(f"https://statsapi.mlb.com/api/v1/people/{player_id}", timeout=20)
     response.raise_for_status()
@@ -247,6 +298,16 @@ def fetch_mlb_game_contexts(date_str: str) -> list[dict[str, Any]]:
                 except Exception:
                     weather = None
             lineups = game.get("lineups") or {}
+            away_players = list(lineups.get("awayPlayers", []) or [])
+            home_players = list(lineups.get("homePlayers", []) or [])
+            away_lineup_source = "confirmed"
+            home_lineup_source = "confirmed"
+            if len(away_players) < 9 and game["teams"]["away"]["team"].get("id"):
+                away_players = fetch_last_mlb_lineup(int(game["teams"]["away"]["team"]["id"]), date_str)
+                away_lineup_source = "last_fielded" if away_players else "missing"
+            if len(home_players) < 9 and game["teams"]["home"]["team"].get("id"):
+                home_players = fetch_last_mlb_lineup(int(game["teams"]["home"]["team"]["id"]), date_str)
+                home_lineup_source = "last_fielded" if home_players else "missing"
             contexts.append(
                 {
                     "game_pk": game.get("gamePk"),
@@ -267,14 +328,18 @@ def fetch_mlb_game_contexts(date_str: str) -> list[dict[str, Any]]:
                         "home": game["teams"]["home"].get("probablePitcher", {}),
                     },
                     "lineups": {
-                        "away": [player.get("fullName") for player in lineups.get("awayPlayers", [])],
-                        "home": [player.get("fullName") for player in lineups.get("homePlayers", [])],
+                        "away": [player.get("fullName") for player in away_players],
+                        "home": [player.get("fullName") for player in home_players],
                     },
-                    "away_lineup_players": lineups.get("awayPlayers", []),
-                    "home_lineup_players": lineups.get("homePlayers", []),
+                    "away_lineup_players": away_players,
+                    "home_lineup_players": home_players,
                     "lineup_status": {
                         "away_confirmed": len(lineups.get("awayPlayers", [])) >= 9,
                         "home_confirmed": len(lineups.get("homePlayers", [])) >= 9,
+                        "away_source": away_lineup_source,
+                        "home_source": home_lineup_source,
+                        "away_available": len(away_players) >= 9,
+                        "home_available": len(home_players) >= 9,
                     },
                     "availability": {
                         "away": {},

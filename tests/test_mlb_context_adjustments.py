@@ -1,9 +1,38 @@
 import unittest
 
+from data_pipeline.mlb_profiles import team_context_from_cached_payload
 from quantum_parlay_oracle import expected_mlb_runs
 
 
 class MLBContextAdjustmentTests(unittest.TestCase):
+    def test_team_context_from_cached_payload_falls_back_when_pitcher_missing(self) -> None:
+        context = team_context_from_cached_payload(
+            "NYY",
+            lineup_payload=[
+                {
+                    "player_id": "1",
+                    "name": "Aaron Judge",
+                    "hand": "R",
+                    "pa_share": 0.13,
+                    "strikeout_rate": 0.24,
+                    "walk_rate": 0.12,
+                    "hbp_rate": 0.01,
+                    "single_rate": 0.15,
+                    "double_rate": 0.05,
+                    "triple_rate": 0.002,
+                    "home_run_rate": 0.07,
+                    "speed_factor": 1.0,
+                    "vs_left_factor": 1.04,
+                    "vs_right_factor": 1.02,
+                }
+            ],
+            pitcher_payload=None,
+        )
+
+        self.assertEqual(context.starter.name, "NYY Starter")
+        self.assertEqual(context.starter.player_id, "NYY-sp-fallback")
+        self.assertAlmostEqual(context.starter.strikeout_rate, 0.225)
+
     def test_expected_mlb_runs_responds_to_bullpen_fatigue_and_pitcher_availability(self) -> None:
         team_form = {
             "NYY": {

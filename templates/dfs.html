@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DraftKings DFS Board</title>
+    <style>
+      :root {
+        --bg: #f2f0eb;
+        --panel: rgba(255, 255, 255, 0.92);
+        --ink: #1b2430;
+        --muted: #58677a;
+        --line: #d8d1c2;
+        --accent: #0c6a52;
+        --accent-2: #9a3d00;
+        --surface: rgba(255,255,255,0.72);
+        --surface-strong: #fff;
+        --shadow: rgba(27, 36, 48, 0.08);
+        --item-line: rgba(216,209,194,0.72);
+        --slot-line: rgba(216,209,194,0.5);
+        --error-bg: #fff1f1;
+        --error-ink: #8a1f1f;
+      }
+      html[data-theme="dark"] {
+        --bg: #10161d;
+        --panel: rgba(26, 35, 46, 0.94);
+        --ink: #edf2f8;
+        --muted: #a6b4c4;
+        --line: #2d3948;
+        --accent: #57c7a0;
+        --accent-2: #f4a261;
+        --surface: rgba(18, 25, 35, 0.84);
+        --surface-strong: #121923;
+        --shadow: rgba(0, 0, 0, 0.35);
+        --item-line: rgba(45,57,72,0.82);
+        --slot-line: rgba(45,57,72,0.62);
+        --error-bg: #32171b;
+        --error-ink: #ffd7d7;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(12,106,82,.16), transparent 28%),
+          radial-gradient(circle at top right, rgba(154,61,0,.10), transparent 24%),
+          linear-gradient(180deg, #faf7f0 0%, var(--bg) 100%);
+      }
+      html[data-theme="dark"] body {
+        background:
+          radial-gradient(circle at top left, rgba(87,199,160,.10), transparent 30%),
+          radial-gradient(circle at top right, rgba(244,162,97,.08), transparent 24%),
+          linear-gradient(180deg, #151d26 0%, var(--bg) 100%);
+      }
+      .shell {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+      .hero, .columns, .cards {
+        display: grid;
+        gap: 18px;
+      }
+      .hero, .columns {
+        grid-template-columns: 1.1fr .9fr;
+      }
+      .panel, .card, .stat {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 12px 28px var(--shadow);
+        padding: 20px;
+      }
+      h1, h2, h3 {
+        margin: 0;
+      }
+      h1 {
+        font-size: 2.35rem;
+        line-height: 1.05;
+      }
+      .sub, .meta, .help {
+        color: var(--muted);
+      }
+      .sub {
+        margin-top: 12px;
+        max-width: 62ch;
+        line-height: 1.5;
+      }
+      .nav {
+        margin-top: 18px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .nav a, .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        text-decoration: none;
+        color: var(--ink);
+        background: var(--surface);
+        font-size: 0.88rem;
+      }
+      .nav a.active {
+        background: rgba(12,106,82,0.12);
+        color: var(--accent);
+      }
+      form, .stack, .cards {
+        display: grid;
+        gap: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+      }
+      .label-title {
+        font-weight: 700;
+      }
+      input, select, button {
+        font: inherit;
+      }
+      input, select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: var(--surface-strong);
+        color: var(--ink);
+      }
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 12px 16px;
+        background: linear-gradient(135deg, var(--accent) 0%, #14926f 100%);
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .stat .k {
+        color: var(--muted);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .stat .v {
+        margin-top: 8px;
+        font-size: 1.3rem;
+        font-weight: 700;
+      }
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+      .item {
+        border-top: 1px solid var(--item-line);
+        padding-top: 10px;
+      }
+      .item:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+      .lineup-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+      }
+      .lineup-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 16px;
+        margin-top: 12px;
+      }
+      .slot-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 0;
+        border-top: 1px solid var(--slot-line);
+      }
+      .slot-row:first-child {
+        border-top: 0;
+      }
+      .slot-name {
+        font-weight: 700;
+      }
+      .availability {
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+      .availability--questionable,
+      .availability--doubtful,
+      .availability--unknown {
+        color: var(--accent-2);
+      }
+      .row-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .empty {
+        color: var(--muted);
+      }
+      .error {
+        border: 1px solid #d64545;
+        background: var(--error-bg);
+        color: var(--error-ink);
+        padding: 14px 16px;
+        border-radius: 14px;
+      }
+      .hero-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: start;
+      }
+      .theme-toggle {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--ink);
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+      @media (max-width: 1100px) {
+        .hero, .columns, .lineup-grid { grid-template-columns: 1fr; }
+        .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .hero-top { flex-direction: column; align-items: stretch; }
+      }
+      @media (max-width: 700px) {
+        .grid, .stats { grid-template-columns: 1fr; }
+        h1 { font-size: 2rem; }
+        .shell { padding: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="hero">
+        <section class="panel">
+          <div class="hero-top">
+            <div>
+              <h1>DraftKings DFS Board</h1>
+              <p class="sub">
+                Build NBA salary-cap lineups from the same projection stack, with separate views for safer head-to-head builds
+                and more aggressive tournament constructions.
+              </p>
+            </div>
+            <button type="button" class="theme-toggle" data-theme-toggle>Dark Mode</button>
+          </div>
+          <div class="nav">
+            <a href="/">Parlay Board</a>
+            <a href="/dfs" class="active">DraftKings DFS</a>
+          </div>
+        </section>
+        <aside class="panel">
+          <h2>Run DFS Build</h2>
+          <form method="post" enctype="multipart/form-data">
+            <div class="grid">
+              <label>
+                <span class="label-title">Slate Date</span>
+                <span class="help">Date used for the underlying projection context.</span>
+                <input type="date" name="date" value="{{ form.date }}">
+              </label>
+              <label>
+                <span class="label-title">Sport</span>
+                <span class="help">Choose which DraftKings classic slate to build.</span>
+                <select name="sport">
+                  <option value="nba" {% if form.sport == "nba" %}selected{% endif %}>NBA</option>
+                  <option value="mlb" {% if form.sport == "mlb" %}selected{% endif %}>MLB</option>
+                </select>
+              </label>
+              <label>
+                <span class="label-title">Mode</span>
+                <span class="help">Head to head is safer. Tournament leans into ceiling and environment concentration.</span>
+                <select name="contest_type">
+                  <option value="head_to_head" {% if form.contest_type == "head_to_head" %}selected{% endif %}>Head To Head</option>
+                  <option value="tournament" {% if form.contest_type == "tournament" %}selected{% endif %}>Tournament</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span class="label-title">DraftKings Salary CSV</span>
+              <span class="help">Local path to the DraftKings salary export used as the player pool.</span>
+              <input type="text" name="salary_csv_path" value="{{ form.salary_csv_path }}">
+            </label>
+            <label>
+              <span class="label-title">Or Upload CSV</span>
+              <span class="help">Optional. If provided, the uploaded file is used for this build instead of the path above.</span>
+              <input type="file" name="salary_csv_upload" accept=".csv,text/csv">
+            </label>
+            {% if form.uploaded_csv_name %}
+              <div class="meta">Last uploaded file: {{ form.uploaded_csv_name }}</div>
+            {% endif %}
+            <button type="submit">Build DFS Board</button>
+          </form>
+        </aside>
+      </div>
+
+      {% if error %}
+        <div class="error" style="margin-top: 18px;">{{ error }}</div>
+      {% endif %}
+
+      {% if result %}
+        <section class="stats" style="margin-top: 24px;">
+          <div class="stat">
+            <div class="k">Sport</div>
+            <div class="v">{{ result.sport|upper }}</div>
+          </div>
+          <div class="stat">
+            <div class="k">Requested Mode</div>
+            <div class="v">{{ result.request_mode.replace("_", " ")|title }}</div>
+          </div>
+          <div class="stat">
+            <div class="k">Build Type</div>
+            <div class="v">{{ result.contest_type.replace("_", " ")|title }}</div>
+          </div>
+          <div class="stat">
+            <div class="k">Focus Players</div>
+            <div class="v">{{ result.focus_players|length }}</div>
+          </div>
+          <div class="stat">
+            <div class="k">Fade Players</div>
+            <div class="v">{{ result.fade_players|length }}</div>
+          </div>
+          <div class="stat">
+            <div class="k">Lineups Built</div>
+            <div class="v">{{ result.lineup_cards|length }}</div>
+          </div>
+        </section>
+
+        <section class="card" style="margin-top: 18px;">
+          <h3>Input Source</h3>
+          <div class="row-meta">
+            {% if result.saved_build_id %}
+              <span class="chip">Saved build: #{{ result.saved_build_id }}</span>
+            {% endif %}
+            {% if result.uploaded_csv_name %}
+              <span class="chip">Uploaded: {{ result.uploaded_csv_name }}</span>
+            {% endif %}
+            {% if result.input_csv_path %}
+              <span class="chip">Resolved path: {{ result.input_csv_path }}</span>
+            {% endif %}
+          </div>
+        </section>
+
+        {% if result.best_overall_lineup %}
+        <section class="card" style="margin-top: 18px;">
+          <div class="lineup-head">
+            <h3>Best Overall Points Build</h3>
+            <div>
+              <strong>{{ "%.1f"|format(result.best_overall_lineup.median_fpts) }}</strong>
+              <span class="meta">expected points</span>
+            </div>
+          </div>
+          <div class="row-meta" style="margin-top: 10px;">
+            <span class="chip">Salary used: {{ result.best_overall_lineup.salary_used }}</span>
+            <span class="chip">Salary left: {{ result.best_overall_lineup.salary_remaining }}</span>
+            <span class="chip">Ceiling: {{ "%.1f"|format(result.best_overall_lineup.ceiling_fpts) }}</span>
+            <span class="chip">Floor: {{ "%.1f"|format(result.best_overall_lineup.floor_fpts) }}</span>
+          </div>
+          <div class="lineup-grid" style="margin-top: 12px;">
+            {% for slot in result.best_overall_lineup.slots %}
+              <div class="slot-row">
+                <div>
+                  <div class="slot-name">{{ slot.slot }} Â· {{ slot.name }}</div>
+                  <div class="meta">{{ slot.team }} vs {{ slot.opponent }}</div>
+                  <div class="availability availability--{{ slot.availability_status|lower|replace('_', '-') }}">
+                    {{ slot.availability_status }} Â· {{ slot.availability_source }}
+                  </div>
+                </div>
+                <div style="text-align: right;">
+                  <div><strong>{{ slot.salary }}</strong></div>
+                  <div class="meta">{{ "%.1f"|format(slot.median_fpts) }} median</div>
+                  <div class="meta">{{ "%.1f"|format(slot.ceiling_fpts) }} ceiling</div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+        {% endif %}
+
+        {% if result.best_value_lineup %}
+        <section class="card" style="margin-top: 18px;">
+          <div class="lineup-head">
+            <h3>Best Value Build</h3>
+            <div>
+              <strong>{{ "%.1f"|format(result.best_value_lineup.median_fpts) }}</strong>
+              <span class="meta">expected points</span>
+            </div>
+          </div>
+          <div class="row-meta" style="margin-top: 10px;">
+            <span class="chip">Salary used: {{ result.best_value_lineup.salary_used }}</span>
+            <span class="chip">Salary left: {{ result.best_value_lineup.salary_remaining }}</span>
+            <span class="chip">Ceiling: {{ "%.1f"|format(result.best_value_lineup.ceiling_fpts) }}</span>
+            <span class="chip">Floor: {{ "%.1f"|format(result.best_value_lineup.floor_fpts) }}</span>
+          </div>
+          <div class="lineup-grid" style="margin-top: 12px;">
+            {% for slot in result.best_value_lineup.slots %}
+              <div class="slot-row">
+                <div>
+                  <div class="slot-name">{{ slot.slot }} Â· {{ slot.name }}</div>
+                  <div class="meta">{{ slot.team }} vs {{ slot.opponent }}</div>
+                  <div class="availability availability--{{ slot.availability_status|lower|replace('_', '-') }}">
+                    {{ slot.availability_status }} Â· {{ slot.availability_source }}
+                  </div>
+                </div>
+                <div style="text-align: right;">
+                  <div><strong>{{ slot.salary }}</strong></div>
+                  <div class="meta">{{ "%.1f"|format(slot.median_fpts) }} median</div>
+                  <div class="meta">{{ "%.1f"|format(slot.ceiling_fpts) }} ceiling</div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+        {% endif %}
+
+        <div class="columns" style="margin-top: 18px;">
+          <section class="stack">
+            <div class="card">
+              <h3>Build Reasons</h3>
+              {% if result.build_reasons %}
+                <div class="list">
+                  {% for reason in result.build_reasons %}
+                    <div class="item">{{ reason }}</div>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <div class="empty">No thesis-driven reasons were available for this build.</div>
+              {% endif %}
+            </div>
+
+            <div class="card">
+              <h3>Game Environment</h3>
+              {% if result.game_boosts %}
+                <div class="list">
+                  {% for game, score in result.game_boosts.items() %}
+                    <div class="item">
+                      <div class="lineup-head">
+                        <span><strong>{{ game }}</strong></span>
+                        <span>{{ "%.2f"|format(score) }}</span>
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% else %}
+                <div class="empty">No environment boosts were available.</div>
+              {% endif %}
+            </div>
+          </section>
+
+          <section class="stack">
+            <div class="card">
+              <h3>Player Bias</h3>
+              <div class="lineup-grid">
+                <div>
+                  <div class="label-title">Focus</div>
+                  {% if result.focus_players %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.focus_players %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No focus players.</div>
+                  {% endif %}
+                </div>
+                <div>
+                  <div class="label-title">Fades</div>
+                  {% if result.fade_players %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.fade_players %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No fades.</div>
+                  {% endif %}
+                </div>
+              </div>
+              <div class="lineup-grid" style="margin-top: 16px;">
+                <div>
+                  <div class="label-title">Stack Targets</div>
+                  {% if result.stack_targets %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.stack_targets %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No explicit stack targets.</div>
+                  {% endif %}
+                </div>
+                <div>
+                  <div class="label-title">Bring-Back Targets</div>
+                  {% if result.bring_back_targets %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.bring_back_targets %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No bring-back targets.</div>
+                  {% endif %}
+                </div>
+                <div>
+                  <div class="label-title">One-Off Targets</div>
+                  {% if result.one_off_targets %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.one_off_targets %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No one-off targets.</div>
+                  {% endif %}
+                </div>
+                <div>
+                  <div class="label-title">Avoid Chalk</div>
+                  {% if result.avoid_chalk %}
+                    <div class="row-meta" style="margin-top: 10px;">
+                      {% for player in result.avoid_chalk %}
+                        <span class="chip">{{ player }}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty" style="margin-top: 10px;">No explicit chalk avoids.</div>
+                  {% endif %}
+                </div>
+              </div>
+              <div class="row-meta" style="margin-top: 12px;">
+                {% if result.max_players_per_game %}
+                  <span class="chip">Max players per game: {{ result.max_players_per_game }}</span>
+                {% endif %}
+                {% if result.preferred_salary_shape %}
+                  <span class="chip">Salary shape: {{ result.preferred_salary_shape.replace("_", " ")|title }}</span>
+                {% endif %}
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {% if result.lineup_families %}
+        <section class="cards" style="margin-top: 18px;">
+          {% for family in result.lineup_families %}
+            <article class="card">
+              <div class="lineup-head">
+                <h3>Core Family {{ loop.index }}</h3>
+                <div><strong>{{ family.label }}</strong></div>
+              </div>
+              <div class="row-meta" style="margin-top: 10px;">
+                {% for player in family.core_players %}
+                  <span class="chip">{{ player }}</span>
+                {% endfor %}
+              </div>
+              <div class="list" style="margin-top: 12px;">
+                {% for lineup in family.lineup_cards %}
+                  <div class="item">
+                    <div class="lineup-head">
+                      <div><strong>Variant {{ loop.index }}</strong></div>
+                      <div>
+                        <strong>{{ "%.1f"|format(lineup.median_fpts) }}</strong>
+                        <span class="meta">median</span>
+                      </div>
+                    </div>
+                    <div class="row-meta">
+                      <span class="chip">Salary used: {{ lineup.salary_used }}</span>
+                      <span class="chip">Salary left: {{ lineup.salary_remaining }}</span>
+                      <span class="chip">Ceiling: {{ "%.1f"|format(lineup.ceiling_fpts) }}</span>
+                    </div>
+                    <div class="lineup-grid" style="margin-top: 8px;">
+                      {% for slot in lineup.slots %}
+                        <div class="slot-row">
+                          <div>
+                            <div class="slot-name">{{ slot.slot }} · {{ slot.name }}</div>
+                            <div class="meta">{{ slot.team }} vs {{ slot.opponent }}</div>
+                          </div>
+                          <div style="text-align: right;">
+                            <div><strong>{{ slot.salary }}</strong></div>
+                            <div class="meta">{{ "%.1f"|format(slot.median_fpts) }} median</div>
+                          </div>
+                        </div>
+                      {% endfor %}
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            </article>
+          {% endfor %}
+        </section>
+        {% endif %}
+
+        <section class="cards" style="margin-top: 18px;">
+          {% for lineup in result.lineup_cards %}
+            <article class="card">
+              <div class="lineup-head">
+                <h3>Lineup {{ loop.index }}</h3>
+                <div>
+                  <strong>{{ "%.1f"|format(lineup.median_fpts) }}</strong>
+                  <span class="meta">median</span>
+                </div>
+              </div>
+              <div class="row-meta">
+                <span class="chip">Salary used: {{ lineup.salary_used }}</span>
+                <span class="chip">Salary left: {{ lineup.salary_remaining }}</span>
+                <span class="chip">Ceiling: {{ "%.1f"|format(lineup.ceiling_fpts) }}</span>
+                <span class="chip">Floor: {{ "%.1f"|format(lineup.floor_fpts) }}</span>
+                <span class="chip">Confidence: {{ "%.2f"|format(lineup.average_confidence) }}</span>
+                {% for status, count in lineup.availability_counts.items() %}
+                  <span class="chip">{{ status }}: {{ count }}</span>
+                {% endfor %}
+              </div>
+              {% if lineup.primary_games %}
+                <div class="meta" style="margin-top: 10px;">
+                  Primary games: {{ lineup.primary_games|join(", ") }}
+                </div>
+              {% endif %}
+              {% if lineup.game_exposures %}
+                <div class="row-meta">
+                  {% for game, count in lineup.game_exposures.items() %}
+                    <span class="chip">{{ game }} x{{ count }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if lineup.focus_hits or lineup.fade_hits %}
+                <div class="row-meta">
+                  {% for name in lineup.focus_hits %}
+                    <span class="chip">{{ name }} · focus</span>
+                  {% endfor %}
+                  {% for name in lineup.fade_hits %}
+                    <span class="chip">{{ name }} · fade</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              <div class="lineup-grid" style="margin-top: 12px;">
+                {% for slot in lineup.slots %}
+                  <div class="slot-row">
+                    <div>
+                      <div class="slot-name">{{ slot.slot }} · {{ slot.name }}</div>
+                      <div class="meta">{{ slot.team }} vs {{ slot.opponent }}</div>
+                      <div class="availability availability--{{ slot.availability_status|replace(' ', '-') }}">
+                        {{ slot.availability_status }} · {{ slot.availability_source }}
+                      </div>
+                    </div>
+                    <div style="text-align: right;">
+                      <div><strong>{{ slot.salary }}</strong></div>
+                      <div class="meta">{{ "%.1f"|format(slot.median_fpts) }} median</div>
+                      <div class="meta">{{ "%.1f"|format(slot.ceiling_fpts) }} ceiling</div>
+                    </div>
+                  </div>
+                {% endfor %}
+              </div>
+            </article>
+          {% endfor %}
+        </section>
+      {% endif %}
+    </div>
+    <script>
+      (() => {
+        const storageKey = "dashboard-theme";
+        const root = document.documentElement;
+        const toggle = document.querySelector("[data-theme-toggle]");
+        const applyTheme = (theme) => {
+          root.dataset.theme = theme;
+          if (toggle) {
+            toggle.textContent = theme === "dark" ? "Light Mode" : "Dark Mode";
+          }
+        };
+        const savedTheme = localStorage.getItem(storageKey) || "light";
+        applyTheme(savedTheme);
+        if (toggle) {
+          toggle.addEventListener("click", () => {
+            const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+            localStorage.setItem(storageKey, nextTheme);
+            applyTheme(nextTheme);
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
