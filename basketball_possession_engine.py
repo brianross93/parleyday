@@ -69,9 +69,9 @@ def resolve_pnr(
 
     branch_rates = adjust_branches(
         base_rates={
-            "pullup": 0.20 if coverage == DefensiveCoverage.DROP else 0.10,
+            "pullup": 0.18 if coverage == DefensiveCoverage.DROP else 0.08,
             "drive": 0.27 if coverage == DefensiveCoverage.DROP else 0.34,
-            "roller": 0.18 if coverage == DefensiveCoverage.DROP else 0.11,
+            "roller": 0.21 if coverage == DefensiveCoverage.DROP else 0.13,
             "kickout": 0.14,
             "foul": 0.08 if coverage == DefensiveCoverage.DROP else 0.12,
             "turnover": 0.06 if coverage == DefensiveCoverage.DROP else 0.08,
@@ -264,7 +264,7 @@ def resolve_iso(
 
     branch_rates = adjust_branches(
         base_rates={
-            "drive": 0.38,
+            "drive": 0.40,
             "midrange": 0.05,
             "three": 0.09 if handler.traits.pullup_shooting >= 10.0 else 0.03,
             "foul": 0.13,
@@ -431,10 +431,10 @@ def resolve_drive_attempt(
     drive_advantage = sigmoid_normalize(off_score - def_score)
     branch_rates = adjust_branches(
         base_rates={
-            "rim_clean": 0.30,
-            "rim_contested": 0.24,
+            "rim_clean": 0.32,
+            "rim_contested": 0.26,
             "foul": 0.15,
-            "kickout": 0.10,
+            "kickout": 0.08,
             "strip": 0.08,
             "charge": 0.04,
             "bail_pullup": 0.02,
@@ -1039,16 +1039,62 @@ def _resolve_kickout_action(
     rng: random.Random,
 ) -> dict[str, object]:
     attack_closeout_prob = _clamp(
-        0.16
-        + max(0.0, upstream_advantage - 0.46) * 0.70
-        + ((receiver.traits.separation - 10.0) / 10.0) * 0.16
-        + ((receiver.traits.burst - 10.0) / 10.0) * 0.12
-        - ((receiver.traits.catch_shoot - 10.0) / 10.0) * 0.10,
-        0.08,
-        0.42,
+        0.24
+        + max(0.0, upstream_advantage - 0.45) * 0.85
+        + ((receiver.traits.separation - 10.0) / 10.0) * 0.18
+        + ((receiver.traits.burst - 10.0) / 10.0) * 0.14
+        - ((receiver.traits.catch_shoot - 10.0) / 10.0) * 0.12,
+        0.12,
+        0.56,
     )
-    if rng.random() < attack_closeout_prob:
+    reset_prob = _clamp(
+        0.08
+        + max(0.0, 0.54 - upstream_advantage) * 0.25
+        + max(0.0, (11.0 - receiver.traits.separation) / 20.0),
+        0.05,
+        0.20,
+    )
+    draw = rng.random()
+    if draw < attack_closeout_prob:
         return resolve_drive_attempt(context, receiver, shot_defender, help_defender, rng)
+    if draw < attack_closeout_prob + reset_prob:
+        secondary = _secondary_creator(context, exclude_ids={receiver.player_id})
+        if secondary is not None and secondary.player_id != receiver.player_id:
+            reset_pass = EventContext(
+                event_type=EventType.PASS,
+                actor_id=receiver.player_id,
+                receiver_id=secondary.player_id,
+                defender_id=shot_defender.player_id if shot_defender else None,
+                location=_court_point("top"),
+                success_probability=0.9,
+                realized_success=True,
+                notes="kickout reset",
+            )
+            secondary_assignment = _find_assignment(context.defensive_assignments, secondary.player_id)
+            secondary_defender = _get_player(context, secondary_assignment.defender_id if secondary_assignment else None)
+            if secondary.traits.separation + secondary.traits.burst >= 24.0:
+                return {
+                    "result_type": "nested_action",
+                    "events": (reset_pass,),
+                    "result": resolve_drive_attempt(context, secondary, secondary_defender, help_defender, rng),
+                    "assister_id": None,
+                    "default_off_rebounder": receiver,
+                    "defender": secondary_defender,
+                }
+            return {
+                "result_type": "nested_shot",
+                "events": (reset_pass,),
+                "result": resolve_pullup(
+                    secondary,
+                    secondary_defender,
+                    DefensiveCoverage.DROP,
+                    off_screen=False,
+                    shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
+                ),
+                "assister_id": None,
+                "default_off_rebounder": receiver,
+                "defender": secondary_defender,
+            }
     return resolve_catch_and_shoot(receiver, shot_defender, upstream_advantage, rng)
 
 
@@ -1166,11 +1212,11 @@ def _foul_branch_scale(
 ) -> float:
     defender_discipline = defender.traits.foul_discipline if defender else 10.0
     foul_draw_rating = _clamp(attacker.traits.foul_drawing, 1.0, 20.0)
-    draw_factor = ((foul_draw_rating - 1.0) / 19.0) ** 1.35
+    draw_factor = ((foul_draw_rating - 1.0) / 19.0) ** 1.65
     discipline_edge = (10.0 - defender_discipline) / 10.0
     advantage_edge = advantage - 0.5
-    scale = 0.52 + (draw_factor * 0.52) + (discipline_edge * 0.18) + (advantage_edge * 0.12) + (switch_bonus * 0.40)
-    return _clamp(scale, 0.18, 1.18)
+    scale = 0.44 + (draw_factor * 0.58) + (discipline_edge * 0.16) + (advantage_edge * 0.10) + (switch_bonus * 0.34)
+    return _clamp(scale, 0.14, 1.12)
 
 
 def _choose_drive_foul_type(attacker: PlayerSimProfile, advantage: float, rng: random.Random) -> FoulOutcomeType:
