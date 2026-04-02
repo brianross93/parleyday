@@ -125,6 +125,22 @@ class FoulOutcomeType(StrEnum):
     THREE_SHOT = "three_shot"
 
 
+class EntryType(StrEnum):
+    NORMAL = "normal"
+    TRANSITION = "transition"
+    OREB = "oreb"
+    TIMEOUT = "timeout"
+
+
+class AdvantageState(StrEnum):
+    NONE = "none"
+    PAINT_TOUCH = "paint_touch"
+    FORCED_HELP = "forced_help"
+    PULL_UP_SPACE = "pull_up_space"
+    SWITCH_MISMATCH = "switch_mismatch"
+    TERMINAL = "terminal"
+
+
 @dataclass(frozen=True)
 class CourtPoint:
     x: float
@@ -346,6 +362,28 @@ class EventContext:
     points_scored: int = 0
     foul_drawn: bool = False
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class ProgressionState:
+    shot_clock_remaining: float
+    entry_type: EntryType
+    advantage_state: AdvantageState
+    ball_handler_id: str
+    current_receiver_id: str | None
+    primary_defender_id: str | None
+    help_defender_id: str | None
+    screener_id: str | None
+    coverage: DefensiveCoverage
+    pass_chain: tuple[str, ...]
+    off_ball_states: dict[str, str]
+    clock_urgency: float
+    possession_events: tuple[EventContext, ...]
+    last_passer_id: str | None = None
+    paint_touched: bool = False
+    help_committed: bool = False
+    swing_count: int = 0
+    terminal_result: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

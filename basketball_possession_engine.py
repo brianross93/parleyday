@@ -5,8 +5,10 @@ import random
 from typing import Iterable
 
 from basketball_sim_schema import (
+    AdvantageState,
     DefensiveAssignment,
     DefensiveCoverage,
+    EntryType,
     EventContext,
     EventType,
     FoulOutcomeType,
@@ -16,6 +18,7 @@ from basketball_sim_schema import (
     PlayerSimProfile,
     PossessionContext,
     PossessionOutcome,
+    ProgressionState,
     ShotType,
     TurnoverType,
 )
@@ -47,6 +50,26 @@ def resolve_pnr(
     coverage: DefensiveCoverage,
     rng: random.Random,
 ) -> PossessionOutcome:
+    progression_state = _resolve_pnr_creation_state(context, play_call, coverage, rng)
+    return _resolve_progression_state(context, progression_state, rng)
+
+
+def resolve_iso(
+    context: PossessionContext,
+    play_call: PlayCall,
+    coverage: DefensiveCoverage,
+    rng: random.Random,
+) -> PossessionOutcome:
+    progression_state = _resolve_iso_creation_state(context, play_call, coverage, rng)
+    return _resolve_progression_state(context, progression_state, rng)
+
+
+def _resolve_pnr_creation_state(
+    context: PossessionContext,
+    play_call: PlayCall,
+    coverage: DefensiveCoverage,
+    rng: random.Random,
+) -> ProgressionState:
     handler = _get_player(context, play_call.primary_actor_id)
     screener = _get_player(context, play_call.screener_id)
     on_ball_assignment = _find_assignment(context.defensive_assignments, play_call.primary_actor_id)
@@ -73,7 +96,7 @@ def resolve_pnr(
             "drive": 0.27 if coverage == DefensiveCoverage.DROP else 0.34,
             "roller": 0.21 if coverage == DefensiveCoverage.DROP else 0.13,
             "kickout": 0.14,
-            "foul": 0.12 if coverage == DefensiveCoverage.DROP else 0.15,
+            "foul": 0.16 if coverage == DefensiveCoverage.DROP else 0.19,
             "turnover": 0.06 if coverage == DefensiveCoverage.DROP else 0.08,
             "reset": 0.02 if coverage == DefensiveCoverage.DROP else 0.05,
         },
@@ -103,10 +126,28 @@ def resolve_pnr(
             realized_success=True,
             notes="pnr turnover",
         )
-        return _turnover_outcome(
-            handler.player_id,
-            (screen_event, turnover_event),
-            steal_player_id=on_ball_defender.player_id if on_ball_defender and turnover_event.turnover_type in {TurnoverType.STRIP, TurnoverType.BAD_PASS} else None,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.TERMINAL,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id if screener else None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(screen_event,),
+            terminal_result={
+                "kind": "outcome",
+                "outcome": _turnover_outcome(
+                    handler.player_id,
+                    (screen_event, turnover_event),
+                    steal_player_id=on_ball_defender.player_id if on_ball_defender and turnover_event.turnover_type in {TurnoverType.STRIP, TurnoverType.BAD_PASS} else None,
+                ),
+            },
         )
 
     if branch == "foul":
@@ -121,38 +162,68 @@ def resolve_pnr(
             notes="pnr foul drawn",
         )
         foul_type = _choose_perimeter_foul_type(handler, rng)
-        return _foul_outcome(
-            handler.player_id,
-            handler.traits.ft_pct_raw,
-            (screen_event, foul_event),
-            rng,
-            assisting_player_id=screener.player_id if screener and foul_type == FoulOutcomeType.AND_ONE else None,
-            foul_type=foul_type,
-            shot_type=ShotType.ABOVE_BREAK_THREE if foul_type == FoulOutcomeType.THREE_SHOT else ShotType.RIM,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.TERMINAL,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id if screener else None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(screen_event,),
+            terminal_result={
+                "kind": "outcome",
+                "outcome": _foul_outcome(
+                    handler.player_id,
+                    handler.traits.ft_pct_raw,
+                    (screen_event, foul_event),
+                    rng,
+                    assisting_player_id=screener.player_id if screener and foul_type == FoulOutcomeType.AND_ONE else None,
+                    foul_type=foul_type,
+                    shot_type=ShotType.ABOVE_BREAK_THREE if foul_type == FoulOutcomeType.THREE_SHOT else ShotType.RIM,
+                ),
+            },
         )
 
     if branch == "drive":
-        drive_result = resolve_drive_attempt(context, handler, on_ball_defender, help_defender, rng)
-        return _materialize_action_result(
-            context=context,
-            result=drive_result,
-            lead_events=(screen_event,),
-            default_assister_id=None,
-            default_off_rebounder=screener or handler,
-            defender=on_ball_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.PAINT_TOUCH,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id if screener else None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(screen_event,),
+            paint_touched=True,
+            help_committed=coverage == DefensiveCoverage.SWITCH,
         )
 
     if branch == "pullup":
-        pullup_result = resolve_pullup(handler, on_ball_defender, coverage, off_screen=True)
-        return _materialize_shot_result(
-            context=context,
-            result=pullup_result,
-            lead_events=(screen_event,),
-            assister_id=None,
-            default_off_rebounder=screener or handler,
-            defender=on_ball_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.PULL_UP_SPACE,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id if screener else None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(screen_event,),
         )
 
     if branch == "roller" and screener is not None:
@@ -177,14 +248,28 @@ def resolve_pnr(
                 base=0.64,
             ),
         }
-        return _materialize_shot_result(
-            context=context,
-            result=roller_result,
-            lead_events=(screen_event, pass_event),
-            assister_id=handler.player_id,
-            default_off_rebounder=screener,
-            defender=help_defender or on_ball_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 6.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.TERMINAL,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=screener.player_id,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id,
+            coverage=coverage,
+            pass_chain=(handler.player_id,),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
+            possession_events=(screen_event, pass_event),
+            last_passer_id=handler.player_id,
+            terminal_result={
+                "kind": "shot",
+                "result": roller_result,
+                "assister_id": handler.player_id,
+                "default_off_rebounder": screener,
+                "defender": help_defender or on_ball_defender,
+            },
         )
 
     if branch == "kickout":
@@ -200,14 +285,23 @@ def resolve_pnr(
             notes="pnr kickout",
         )
         shot_defender = _pick_closeout_defender(context, receiver.player_id, on_ball_defender)
-        return _materialize_action_result(
-            context=context,
-            result=_resolve_kickout_action(context, receiver, shot_defender, help_defender, advantage, rng),
-            lead_events=(screen_event, pass_event),
-            default_assister_id=handler.player_id,
-            default_off_rebounder=screener or handler,
-            defender=shot_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 6.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.FORCED_HELP,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=receiver.player_id,
+            primary_defender_id=shot_defender.player_id if shot_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=screener.player_id if screener else None,
+            coverage=coverage,
+            pass_chain=(handler.player_id,),
+            off_ball_states=_initial_off_ball_states(context, {handler.player_id, receiver.player_id}),
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
+            possession_events=(screen_event, pass_event),
+            last_passer_id=handler.player_id,
+            paint_touched=True,
+            help_committed=True,
         )
 
     secondary = _secondary_creator(context, exclude_ids={handler.player_id, screener.player_id if screener else ""})
@@ -222,30 +316,30 @@ def resolve_pnr(
         notes="pnr reset",
     )
     reset_actor = secondary or handler
-    reset_result = resolve_pullup(
-        reset_actor,
-        on_ball_defender,
-        coverage,
-        off_screen=False,
-        shot_type=ShotType.ABOVE_BREAK_THREE if reset_actor.traits.pullup_shooting >= 14.0 and reset_actor.traits.separation >= 12.0 else ShotType.MIDRANGE,
-    )
-    return _materialize_shot_result(
-        context=context,
-        result=reset_result,
-        lead_events=(screen_event, reset_pass),
-        assister_id=None,
-        default_off_rebounder=screener or handler,
-        defender=on_ball_defender,
-        rng=rng,
+    return ProgressionState(
+        shot_clock_remaining=max(0.0, context.clock.shot_clock - 7.0),
+        entry_type=EntryType.NORMAL,
+        advantage_state=AdvantageState.NONE,
+        ball_handler_id=handler.player_id,
+        current_receiver_id=reset_actor.player_id,
+        primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+        help_defender_id=help_defender.player_id if help_defender else None,
+        screener_id=screener.player_id if screener else None,
+        coverage=coverage,
+        pass_chain=(handler.player_id,),
+        off_ball_states={},
+        clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 7.0)),
+        possession_events=(screen_event, reset_pass),
+        last_passer_id=handler.player_id,
     )
 
 
-def resolve_iso(
+def _resolve_iso_creation_state(
     context: PossessionContext,
     play_call: PlayCall,
     coverage: DefensiveCoverage,
     rng: random.Random,
-) -> PossessionOutcome:
+) -> ProgressionState:
     handler = _get_player(context, play_call.primary_actor_id)
     on_ball_assignment = _find_assignment(context.defensive_assignments, play_call.primary_actor_id)
     on_ball_defender = _get_player(context, on_ball_assignment.defender_id if on_ball_assignment else None)
@@ -267,7 +361,7 @@ def resolve_iso(
             "drive": 0.40,
             "midrange": 0.05,
             "three": 0.09 if handler.traits.pullup_shooting >= 10.0 else 0.03,
-            "foul": 0.17,
+            "foul": 0.22,
             "kickout": 0.12,
             "turnover": 0.10,
             "reset": 0.04,
@@ -297,10 +391,28 @@ def resolve_iso(
             realized_success=True,
             notes="iso strip turnover",
         )
-        return _turnover_outcome(
-            handler.player_id,
-            (drive_event, turnover_event),
-            steal_player_id=on_ball_defender.player_id if on_ball_defender and turnover_event.turnover_type == TurnoverType.STRIP else None,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.TERMINAL,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(drive_event,),
+            terminal_result={
+                "kind": "outcome",
+                "outcome": _turnover_outcome(
+                    handler.player_id,
+                    (drive_event, turnover_event),
+                    steal_player_id=on_ball_defender.player_id if on_ball_defender and turnover_event.turnover_type == TurnoverType.STRIP else None,
+                ),
+            },
         )
 
     if branch == "foul":
@@ -315,38 +427,66 @@ def resolve_iso(
             notes="iso foul drawn",
         )
         foul_type = _choose_perimeter_foul_type(handler, rng)
-        return _foul_outcome(
-            handler.player_id,
-            handler.traits.ft_pct_raw,
-            (drive_event, foul_event),
-            rng,
-            foul_type=foul_type,
-            shot_type=ShotType.ABOVE_BREAK_THREE if foul_type == FoulOutcomeType.THREE_SHOT else ShotType.RIM,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.TERMINAL,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(drive_event,),
+            terminal_result={
+                "kind": "outcome",
+                "outcome": _foul_outcome(
+                    handler.player_id,
+                    handler.traits.ft_pct_raw,
+                    (drive_event, foul_event),
+                    rng,
+                    foul_type=foul_type,
+                    shot_type=ShotType.ABOVE_BREAK_THREE if foul_type == FoulOutcomeType.THREE_SHOT else ShotType.RIM,
+                ),
+            },
         )
 
     if branch == "drive":
-        drive_result = resolve_drive_attempt(context, handler, on_ball_defender, help_defender, rng)
-        return _materialize_action_result(
-            context=context,
-            result=drive_result,
-            lead_events=(drive_event,),
-            default_assister_id=None,
-            default_off_rebounder=handler,
-            defender=on_ball_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.PAINT_TOUCH,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(drive_event,),
+            paint_touched=True,
         )
 
     if branch in {"midrange", "three"}:
-        shot_type = ShotType.MIDRANGE if branch == "midrange" else ShotType.ABOVE_BREAK_THREE
-        pullup_result = resolve_pullup(handler, on_ball_defender, coverage, off_screen=False, shot_type=shot_type)
-        return _materialize_shot_result(
-            context=context,
-            result=pullup_result,
-            lead_events=(drive_event,),
-            assister_id=None,
-            default_off_rebounder=handler,
-            defender=on_ball_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.PULL_UP_SPACE,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=None,
+            primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=None,
+            coverage=coverage,
+            pass_chain=(),
+            off_ball_states={},
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
+            possession_events=(drive_event,),
         )
 
     if branch == "kickout":
@@ -362,14 +502,23 @@ def resolve_iso(
             realized_success=True,
             notes="iso kickout",
         )
-        return _materialize_action_result(
-            context=context,
-            result=_resolve_kickout_action(context, receiver, shot_defender, help_defender, advantage, rng),
-            lead_events=(drive_event, pass_event),
-            default_assister_id=handler.player_id,
-            default_off_rebounder=handler,
-            defender=shot_defender,
-            rng=rng,
+        return ProgressionState(
+            shot_clock_remaining=max(0.0, context.clock.shot_clock - 6.0),
+            entry_type=EntryType.NORMAL,
+            advantage_state=AdvantageState.FORCED_HELP,
+            ball_handler_id=handler.player_id,
+            current_receiver_id=receiver.player_id,
+            primary_defender_id=shot_defender.player_id if shot_defender else None,
+            help_defender_id=help_defender.player_id if help_defender else None,
+            screener_id=None,
+            coverage=coverage,
+            pass_chain=(handler.player_id,),
+            off_ball_states=_initial_off_ball_states(context, {handler.player_id, receiver.player_id}),
+            clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
+            possession_events=(drive_event, pass_event),
+            last_passer_id=handler.player_id,
+            paint_touched=True,
+            help_committed=True,
         )
 
     secondary = _secondary_creator(context, exclude_ids={handler.player_id})
@@ -384,21 +533,21 @@ def resolve_iso(
         notes="iso bailout reset",
     )
     bailout_actor = secondary or handler
-    bailout_result = resolve_pullup(
-        bailout_actor,
-        on_ball_defender,
-        coverage,
-        off_screen=False,
-        shot_type=ShotType.ABOVE_BREAK_THREE if bailout_actor.traits.pullup_shooting >= 14.0 and bailout_actor.traits.separation >= 12.0 else ShotType.MIDRANGE,
-    )
-    return _materialize_shot_result(
-        context=context,
-        result=bailout_result,
-        lead_events=(drive_event, reset_pass),
-        assister_id=None,
-        default_off_rebounder=handler,
-        defender=on_ball_defender,
-        rng=rng,
+    return ProgressionState(
+        shot_clock_remaining=max(0.0, context.clock.shot_clock - 7.0),
+        entry_type=EntryType.NORMAL,
+        advantage_state=AdvantageState.NONE,
+        ball_handler_id=handler.player_id,
+        current_receiver_id=bailout_actor.player_id,
+        primary_defender_id=on_ball_defender.player_id if on_ball_defender else None,
+        help_defender_id=help_defender.player_id if help_defender else None,
+        screener_id=None,
+        coverage=coverage,
+        pass_chain=(handler.player_id,),
+        off_ball_states={},
+        clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 7.0)),
+        possession_events=(drive_event, reset_pass),
+        last_passer_id=handler.player_id,
     )
 
 
@@ -433,7 +582,7 @@ def resolve_drive_attempt(
         base_rates={
             "rim_clean": 0.32,
             "rim_contested": 0.26,
-            "foul": 0.17,
+            "foul": 0.22,
             "kickout": 0.08,
             "strip": 0.08,
             "charge": 0.04,
@@ -759,6 +908,262 @@ def _resolve_iso_advantage(
     return sigmoid_normalize(off_score - def_score)
 
 
+def _clock_urgency(shot_clock_remaining: float) -> float:
+    return _clamp((24.0 - shot_clock_remaining) / 10.0, 0.0, 1.0)
+
+
+def _initial_off_ball_states(context: PossessionContext, exclude_ids: set[str]) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for player in _all_players(context, offense=True):
+        if player.player_id in exclude_ids:
+            continue
+        states[player.player_id] = "corner_drift" if player.offensive_role == OffensiveRole.SPACER else "spotted_up"
+    return states
+
+
+def _eligible_receivers(
+    context: PossessionContext,
+    state: ProgressionState,
+    exclude_ids: set[str],
+) -> list[PlayerSimProfile]:
+    candidates: list[PlayerSimProfile] = []
+    for player in _all_players(context, offense=True):
+        if player.player_id in exclude_ids:
+            continue
+        off_ball_state = state.off_ball_states.get(player.player_id, "spotted_up")
+        if off_ball_state not in {"spotted_up", "corner_drift"}:
+            continue
+        candidates.append(player)
+    return candidates
+
+
+def _second_side_loop(
+    context: PossessionContext,
+    state: ProgressionState,
+    rng: random.Random,
+) -> dict[str, object]:
+    receiver = _get_player(context, state.current_receiver_id or state.ball_handler_id)
+    shot_defender = _get_player(context, state.primary_defender_id)
+    help_defender = _get_player(context, state.help_defender_id)
+    if receiver is None:
+        fallback = _get_player(context, state.ball_handler_id)
+        return resolve_pullup(fallback, shot_defender, state.coverage, off_screen=False, shot_type=ShotType.MIDRANGE)
+
+    if state.shot_clock_remaining <= 4.0 or state.swing_count >= 3:
+        bailout_type = ShotType.ABOVE_BREAK_THREE if receiver.traits.pullup_shooting >= 12.0 else ShotType.MIDRANGE
+        return {
+            "result_type": "nested_shot",
+            "events": (),
+            "result": resolve_pullup(receiver, shot_defender, state.coverage, off_screen=False, shot_type=bailout_type),
+            "assister_id": None,
+            "default_off_rebounder": receiver,
+            "defender": shot_defender,
+        }
+
+    contest_level = ((shot_defender.traits.closeout if shot_defender else 10.0) * 0.6) + ((shot_defender.traits.containment if shot_defender else 10.0) * 0.4)
+    openness = max(0.0, receiver.traits.catch_shoot - contest_level)
+    shot_aggression = (receiver.traits.catch_shoot * 0.55) + (receiver.traits.decision_making * 0.25) + (receiver.traits.offensive_load * 0.20)
+    shoot_probability = _clamp(
+        0.34
+        + (openness / 20.0) * 0.35
+        + (shot_aggression / 20.0) * 0.20
+        + max(0.0, (8.0 - state.shot_clock_remaining) / 8.0) * 0.25
+        - (context.offensive_tactics.second_side_rate * 0.15),
+        0.12,
+        0.86,
+    )
+    attack_probability = _clamp(
+        context.offensive_tactics.closeout_attack_rate * 0.40
+        + ((receiver.traits.separation + receiver.traits.burst - receiver.traits.catch_shoot) / 40.0) * 0.25
+        + max(0.0, 0.5 - openness / 20.0) * 0.10,
+        0.08,
+        0.46,
+    )
+    swing_probability = _clamp(
+        (1.0 - shoot_probability) * 0.55
+        + (context.offensive_tactics.second_side_rate * 0.25)
+        - max(0.0, (6.0 - state.shot_clock_remaining) / 6.0) * 0.30,
+        0.0,
+        0.55,
+    )
+    reset_probability = max(0.05, 1.0 - (shoot_probability + attack_probability + swing_probability))
+
+    decision = _weighted_choice(
+        rng,
+        [("shoot", shoot_probability), ("attack", attack_probability), ("swing", swing_probability), ("reset", reset_probability)],
+        default="shoot",
+    )
+    if decision == "shoot":
+        return resolve_catch_and_shoot(context, receiver, shot_defender, 0.5 + (openness / 40.0), rng)
+    if decision == "attack":
+        return resolve_drive_attempt(context, receiver, shot_defender, help_defender, rng)
+    if decision == "reset":
+        secondary = _secondary_creator(context, exclude_ids={receiver.player_id})
+        secondary = secondary or _get_player(context, state.ball_handler_id)
+        secondary_assignment = _find_assignment(context.defensive_assignments, secondary.player_id)
+        secondary_defender = _get_player(context, secondary_assignment.defender_id if secondary_assignment else None)
+        reset_pass = EventContext(
+            event_type=EventType.PASS,
+            actor_id=receiver.player_id,
+            receiver_id=secondary.player_id,
+            defender_id=shot_defender.player_id if shot_defender else None,
+            location=_court_point("top"),
+            success_probability=0.88,
+            realized_success=True,
+            notes="second_side reset",
+        )
+        return {
+            "result_type": "nested_shot",
+            "events": (reset_pass,),
+            "result": resolve_pullup(
+                secondary,
+                secondary_defender,
+                state.coverage,
+                off_screen=False,
+                shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
+            ),
+            "assister_id": None,
+            "default_off_rebounder": receiver,
+            "defender": secondary_defender,
+        }
+
+    eligible = _eligible_receivers(context, state, {receiver.player_id, state.last_passer_id or ""})
+    if not eligible:
+        return resolve_catch_and_shoot(context, receiver, shot_defender, 0.5 + (openness / 40.0), rng)
+    weighted = []
+    for player in eligible:
+        off_ball_state = state.off_ball_states.get(player.player_id, "spotted_up")
+        corner_bonus = 1.0 if off_ball_state == "corner_drift" else 0.0
+        openness_estimate = max(0.0, player.traits.catch_shoot - ((shot_defender.traits.closeout if shot_defender else 10.0) * 0.6))
+        weight = (
+            (player.traits.catch_shoot * 0.40)
+            + (_shooter_distribution_weight(context, player) * 5.0 * 0.25)
+            + (corner_bonus * 20.0 * 0.20)
+            + (openness_estimate * 0.15)
+        )
+        weighted.append((player, max(0.1, weight)))
+    next_receiver = _weighted_choice(rng, weighted, default=eligible[0])
+    next_defender = _pick_closeout_defender(context, next_receiver.player_id, shot_defender)
+    swing_event = EventContext(
+        event_type=EventType.PASS,
+        actor_id=receiver.player_id,
+        receiver_id=next_receiver.player_id,
+        defender_id=shot_defender.player_id if shot_defender else None,
+        location=_court_point("wing"),
+        success_probability=_clamp(0.82 + ((receiver.traits.pass_accuracy + receiver.traits.pass_vision - 20.0) / 40.0) * 0.15, 0.72, 0.95),
+        realized_success=True,
+        notes="swing pass",
+    )
+    next_state = ProgressionState(
+        shot_clock_remaining=max(0.0, state.shot_clock_remaining - 2.5),
+        entry_type=state.entry_type,
+        advantage_state=AdvantageState.FORCED_HELP,
+        ball_handler_id=state.ball_handler_id,
+        current_receiver_id=next_receiver.player_id,
+        primary_defender_id=next_defender.player_id if next_defender else None,
+        help_defender_id=state.help_defender_id,
+        screener_id=state.screener_id,
+        coverage=state.coverage,
+        pass_chain=state.pass_chain + (receiver.player_id,),
+        off_ball_states=state.off_ball_states,
+        clock_urgency=_clock_urgency(max(0.0, state.shot_clock_remaining - 2.5)),
+        possession_events=(swing_event,),
+        last_passer_id=receiver.player_id,
+        paint_touched=state.paint_touched,
+        help_committed=state.help_committed,
+        swing_count=state.swing_count + 1,
+    )
+    return {
+        "result_type": "nested_action",
+        "events": (swing_event,),
+        "result": _second_side_loop(context, next_state, rng),
+        "assister_id": state.last_passer_id,
+        "default_off_rebounder": receiver,
+        "defender": next_defender,
+    }
+
+
+def _resolve_progression_state(
+    context: PossessionContext,
+    state: ProgressionState,
+    rng: random.Random,
+) -> PossessionOutcome:
+    ball_handler = _get_player(context, state.ball_handler_id)
+    current_actor = _get_player(context, state.current_receiver_id or state.ball_handler_id)
+    screener = _get_player(context, state.screener_id)
+    primary_defender = _get_player(context, state.primary_defender_id)
+    help_defender = _get_player(context, state.help_defender_id)
+    if state.terminal_result is not None:
+        if state.terminal_result["kind"] == "outcome":
+            return state.terminal_result["outcome"]
+        return _materialize_shot_result(
+            context=context,
+            result=state.terminal_result["result"],
+            lead_events=state.possession_events,
+            assister_id=state.terminal_result.get("assister_id"),
+            default_off_rebounder=state.terminal_result.get("default_off_rebounder", screener or current_actor),
+            defender=state.terminal_result.get("defender", primary_defender),
+            rng=rng,
+        )
+
+    if state.advantage_state == AdvantageState.PAINT_TOUCH:
+        drive_result = resolve_drive_attempt(context, current_actor, primary_defender, help_defender, rng)
+        return _materialize_action_result(
+            context=context,
+            result=drive_result,
+            lead_events=state.possession_events,
+            default_assister_id=None,
+            default_off_rebounder=screener or current_actor,
+            defender=primary_defender,
+            rng=rng,
+        )
+
+    if state.advantage_state == AdvantageState.PULL_UP_SPACE:
+        shot_type = ShotType.ABOVE_BREAK_THREE if current_actor.traits.pullup_shooting >= 13.0 else ShotType.MIDRANGE
+        if state.shot_clock_remaining <= 5.0 and current_actor.traits.pullup_shooting < 12.0:
+            shot_type = ShotType.MIDRANGE
+        pullup_result = resolve_pullup(current_actor, primary_defender, state.coverage, off_screen=(screener is not None), shot_type=shot_type)
+        return _materialize_shot_result(
+            context=context,
+            result=pullup_result,
+            lead_events=state.possession_events,
+            assister_id=None,
+            default_off_rebounder=screener or current_actor,
+            defender=primary_defender,
+            rng=rng,
+        )
+
+    if state.advantage_state == AdvantageState.FORCED_HELP:
+        kickout_result = _second_side_loop(context, state, rng)
+        return _materialize_action_result(
+            context=context,
+            result=kickout_result,
+            lead_events=state.possession_events,
+            default_assister_id=state.last_passer_id,
+            default_off_rebounder=screener or ball_handler,
+            defender=primary_defender,
+            rng=rng,
+        )
+
+    reset_actor = current_actor
+    reset_result = resolve_pullup(
+        reset_actor,
+        primary_defender,
+        state.coverage,
+        off_screen=False,
+        shot_type=ShotType.ABOVE_BREAK_THREE if reset_actor.traits.pullup_shooting >= 14.0 and reset_actor.traits.separation >= 12.0 else ShotType.MIDRANGE,
+    )
+    return _materialize_shot_result(
+        context=context,
+        result=reset_result,
+        lead_events=state.possession_events,
+        assister_id=None,
+        default_off_rebounder=screener or ball_handler,
+        defender=primary_defender,
+        rng=rng,
+    )
+
+
 def _materialize_action_result(
     context: PossessionContext,
     result: dict[str, object],
@@ -1040,70 +1445,31 @@ def _resolve_kickout_action(
     help_defender: PlayerSimProfile | None,
     upstream_advantage: float,
     rng: random.Random,
+    *,
+    last_passer_id: str | None = None,
+    shot_clock_remaining: float | None = None,
+    swing_depth: int = 0,
 ) -> dict[str, object]:
-    closeout_attack_bias = (context.offensive_tactics.closeout_attack_rate - 0.5) * 0.35
-    second_side_bias = (context.offensive_tactics.second_side_rate - 0.25) * 0.45
-    attack_closeout_prob = _clamp(
-        0.24
-        + max(0.0, upstream_advantage - 0.45) * 0.85
-        + ((receiver.traits.separation - 10.0) / 10.0) * 0.18
-        + ((receiver.traits.burst - 10.0) / 10.0) * 0.14
-        - ((receiver.traits.catch_shoot - 10.0) / 10.0) * 0.12,
-        0.12 + closeout_attack_bias,
-        0.56 + closeout_attack_bias,
+    state = ProgressionState(
+        shot_clock_remaining=context.clock.shot_clock if shot_clock_remaining is None else shot_clock_remaining,
+        entry_type=EntryType.NORMAL,
+        advantage_state=AdvantageState.FORCED_HELP,
+        ball_handler_id=last_passer_id or receiver.player_id,
+        current_receiver_id=receiver.player_id,
+        primary_defender_id=shot_defender.player_id if shot_defender else None,
+        help_defender_id=help_defender.player_id if help_defender else None,
+        screener_id=None,
+        coverage=DefensiveCoverage.DROP,
+        pass_chain=((last_passer_id,) if last_passer_id else ()),
+        off_ball_states=_initial_off_ball_states(context, {receiver.player_id, last_passer_id or ""}),
+        clock_urgency=_clock_urgency(context.clock.shot_clock if shot_clock_remaining is None else shot_clock_remaining),
+        possession_events=(),
+        last_passer_id=last_passer_id,
+        paint_touched=upstream_advantage >= 0.55,
+        help_committed=True,
+        swing_count=swing_depth,
     )
-    attack_closeout_prob = _clamp(attack_closeout_prob, 0.10, 0.68)
-    reset_prob = _clamp(
-        0.08
-        + max(0.0, 0.54 - upstream_advantage) * 0.25
-        + max(0.0, (11.0 - receiver.traits.separation) / 20.0)
-        + second_side_bias
-        - (closeout_attack_bias * 0.4),
-        0.12,
-        0.32,
-    )
-    draw = rng.random()
-    if draw < attack_closeout_prob:
-        return resolve_drive_attempt(context, receiver, shot_defender, help_defender, rng)
-    if draw < attack_closeout_prob + reset_prob:
-        secondary = _secondary_creator(context, exclude_ids={receiver.player_id})
-        if secondary is not None and secondary.player_id != receiver.player_id:
-            reset_pass = EventContext(
-                event_type=EventType.PASS,
-                actor_id=receiver.player_id,
-                receiver_id=secondary.player_id,
-                defender_id=shot_defender.player_id if shot_defender else None,
-                location=_court_point("top"),
-                success_probability=0.9,
-                realized_success=True,
-                notes="kickout reset",
-            )
-            secondary_assignment = _find_assignment(context.defensive_assignments, secondary.player_id)
-            secondary_defender = _get_player(context, secondary_assignment.defender_id if secondary_assignment else None)
-            if secondary.traits.separation + secondary.traits.burst >= 24.0:
-                return {
-                    "result_type": "nested_action",
-                    "events": (reset_pass,),
-                    "result": resolve_drive_attempt(context, secondary, secondary_defender, help_defender, rng),
-                    "assister_id": receiver.player_id if receiver.traits.pass_vision + receiver.traits.pass_accuracy >= 22.0 else None,
-                    "default_off_rebounder": receiver,
-                    "defender": secondary_defender,
-                }
-            return {
-                "result_type": "nested_shot",
-                "events": (reset_pass,),
-                "result": resolve_pullup(
-                    secondary,
-                    secondary_defender,
-                    DefensiveCoverage.DROP,
-                    off_screen=False,
-                    shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
-                ),
-                "assister_id": receiver.player_id if receiver.traits.pass_vision + receiver.traits.pass_accuracy >= 24.0 else None,
-                "default_off_rebounder": receiver,
-                "defender": secondary_defender,
-            }
-    return resolve_catch_and_shoot(context, receiver, shot_defender, upstream_advantage, rng)
+    return _second_side_loop(context, state, rng)
 
 
 def _secondary_creator(context: PossessionContext, exclude_ids: set[str]) -> PlayerSimProfile | None:
@@ -1223,7 +1589,7 @@ def _foul_branch_scale(
     draw_factor = ((foul_draw_rating - 1.0) / 19.0) ** 2.3
     discipline_edge = (10.0 - defender_discipline) / 10.0
     advantage_edge = advantage - 0.5
-    scale = 0.28 + (draw_factor * 0.76) + (discipline_edge * 0.14) + (advantage_edge * 0.08) + (switch_bonus * 0.22)
+    scale = 0.16 + (draw_factor * 0.76) + (discipline_edge * 0.14) + (advantage_edge * 0.08) + (switch_bonus * 0.22)
     return _clamp(scale, 0.10, 1.08)
 
 

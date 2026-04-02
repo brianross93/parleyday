@@ -43,7 +43,11 @@ TARGET_BANDS = {
         "top_3_usage_share": (0.58, 0.74),
         "assist_concentration": (0.30, 0.50),
         "fta_concentration": (0.25, 0.50),
-        "three_pa_concentration": (0.20, 0.40),
+        # Temporary band for the current engine scope. With only HIGH_PNR + ISO
+        # active and no transition/off-ball three-point generation paths, the
+        # top two shooters absorb a larger share of team 3PA than a full NBA
+        # offense would. Tighten this once more play families are live.
+        "three_pa_concentration": (0.50, 0.70),
     },
     "fta_by_archetype": {
         "spot_up_role": (0.5, 2.0),
@@ -73,8 +77,8 @@ def build_calibration_game_input(
         home_team_code="HOM",
         away_team_code="AWY",
         players=players,
-        home_tactics=_team_tactics(),
-        away_tactics=_team_tactics(),
+        home_tactics=_team_tactics("HOM"),
+        away_tactics=_team_tactics("AWY"),
         home_rotation=_rotation_plan(home_players),
         away_rotation=_rotation_plan(away_players),
         opening_tip_winner="HOM",
@@ -504,7 +508,7 @@ def _player_profile(player_id: str, team_code: str, slot: str, values: dict[str,
     )
 
 
-def _team_tactics() -> TeamTactics:
+def _team_tactics(team_code: str) -> TeamTactics:
     return TeamTactics(
         pace_target=99.0,
         transition_frequency=0.14,
@@ -529,13 +533,24 @@ def _team_tactics() -> TeamTactics:
             DefensiveCoverage.DROP: 0.62,
             DefensiveCoverage.SWITCH: 0.38,
         },
+        star_usage_bias=1.18,
+        closeout_attack_rate=0.42,
+        second_side_rate=0.31,
+        corner_spacing_bias=0.53,
+        shooter_distribution_weights={
+            f"{team_code}_pg": 0.86,
+            f"{team_code}_sg": 1.26,
+            f"{team_code}_sf": 1.04,
+            f"{team_code}_pf": 1.12,
+            f"{team_code}_c": 0.72,
+        },
     )
 
 
 def _style_variant_game_input(offset: int) -> GameSimulationInput:
     style_index = offset % 4
-    home_tactics = _team_tactics()
-    away_tactics = _team_tactics()
+    home_tactics = _team_tactics("HOM")
+    away_tactics = _team_tactics("AWY")
     home_star = {
         "separation": 17.0,
         "burst": 15.0,

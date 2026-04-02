@@ -2,7 +2,7 @@ import random
 from collections import Counter
 from dataclasses import replace
 
-from basketball_possession_engine import _best_shooter, _primary_creator_id, simulate_possession
+from basketball_possession_engine import _best_shooter, _get_player, _pick_closeout_defender, _primary_creator_id, _resolve_kickout_action, simulate_possession
 from basketball_sim_schema import (
     BasketballSide,
     CourtPoint,
@@ -247,6 +247,37 @@ def test_shooter_distribution_weights_influence_kickout_targeting() -> None:
         for seed in range(250)
     )
     assert picks["forward"] > picks["shooter"]
+
+
+def test_kickout_action_can_swing_to_second_side() -> None:
+    context = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    context = replace(
+        context,
+        offensive_tactics=replace(
+            context.offensive_tactics,
+            closeout_attack_rate=0.2,
+            second_side_rate=0.95,
+            shooter_distribution_weights={"wing": 1.4, "forward": 1.3, "shooter": 0.7},
+        ),
+    )
+    receiver = _get_player(context, "wing")
+    shot_defender = _pick_closeout_defender(context, receiver.player_id, _get_player(context, "d1"))
+    found_swing = False
+    for seed in range(40):
+        result = _resolve_kickout_action(
+            context,
+            receiver,
+            shot_defender,
+            _get_player(context, "d5"),
+            0.72,
+            random.Random(seed),
+            last_passer_id="creator",
+            shot_clock_remaining=12.0,
+        )
+        if result["result_type"] == "nested_action" and result["events"][0].notes == "swing pass":
+            found_swing = True
+            break
+    assert found_swing
 
 
 def test_simulate_iso_returns_valid_minimal_outcome() -> None:
