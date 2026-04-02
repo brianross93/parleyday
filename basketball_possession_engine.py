@@ -73,7 +73,7 @@ def resolve_pnr(
             "drive": 0.27 if coverage == DefensiveCoverage.DROP else 0.34,
             "roller": 0.21 if coverage == DefensiveCoverage.DROP else 0.13,
             "kickout": 0.14,
-            "foul": 0.08 if coverage == DefensiveCoverage.DROP else 0.12,
+            "foul": 0.12 if coverage == DefensiveCoverage.DROP else 0.15,
             "turnover": 0.06 if coverage == DefensiveCoverage.DROP else 0.08,
             "reset": 0.02 if coverage == DefensiveCoverage.DROP else 0.05,
         },
@@ -267,7 +267,7 @@ def resolve_iso(
             "drive": 0.40,
             "midrange": 0.05,
             "three": 0.09 if handler.traits.pullup_shooting >= 10.0 else 0.03,
-            "foul": 0.13,
+            "foul": 0.17,
             "kickout": 0.12,
             "turnover": 0.10,
             "reset": 0.04,
@@ -433,7 +433,7 @@ def resolve_drive_attempt(
         base_rates={
             "rim_clean": 0.32,
             "rim_contested": 0.26,
-            "foul": 0.15,
+            "foul": 0.17,
             "kickout": 0.08,
             "strip": 0.08,
             "charge": 0.04,
@@ -560,6 +560,7 @@ def resolve_pullup(
 
 
 def resolve_catch_and_shoot(
+    context: PossessionContext,
     shooter: PlayerSimProfile,
     defender: PlayerSimProfile | None,
     upstream_advantage: float,
@@ -575,7 +576,7 @@ def resolve_catch_and_shoot(
         ]
     )
     quality = sigmoid_normalize(off_score - def_score)
-    shot_type = ShotType.CORNER_THREE if rng.random() < _corner_three_probability(shooter, upstream_advantage) else ShotType.ABOVE_BREAK_THREE
+    shot_type = ShotType.CORNER_THREE if rng.random() < _corner_three_probability(context, shooter, upstream_advantage) else ShotType.ABOVE_BREAK_THREE
     event = EventContext(
         event_type=EventType.SHOT,
         actor_id=shooter.player_id,
@@ -1003,16 +1004,14 @@ def _find_assignment(assignments: Iterable[DefensiveAssignment], offensive_playe
 
 
 def _primary_creator_id(context: PossessionContext, rng: random.Random) -> str:
+    bias = _clamp(context.offensive_tactics.star_usage_bias, 0.75, 1.8)
     weighted_players = []
     for player_id in context.offense_lineup.player_ids:
         player = _get_player(context, player_id)
         if player is None:
             continue
-        weight = (
-            (player.traits.offensive_load * 0.82)
-            + (player.traits.pass_vision * 0.12)
-            + (player.traits.pass_accuracy * 0.06)
-        )
+        base_load = max(player.traits.offensive_load, 0.1) ** bias
+        weight = (base_load * 0.82) + (player.traits.pass_vision * 0.12) + (player.traits.pass_accuracy * 0.06)
         weighted_players.append((player_id, max(0.1, weight)))
     return _weighted_choice(rng, weighted_players, default=context.offense_lineup.player_ids[0])
 
@@ -1021,11 +1020,15 @@ def _best_shooter(context: PossessionContext, exclude_ids: set[str], rng: random
     candidates = [player for player in _all_players(context, offense=True) if player.player_id not in exclude_ids]
     weighted_candidates = []
     for player in candidates:
+        role_penalty = 2.5 if player.offensive_role == OffensiveRole.SPACER else 0.0
         weight = (
-            (player.traits.catch_shoot * 0.75)
+            (player.traits.catch_shoot * 0.36)
             + (player.traits.decision_making * 0.10)
-            + (max(1.0, 12.0 - player.traits.offensive_load) * 0.15)
+            + (max(1.0, 15.0 - player.traits.offensive_load) * 0.38)
+            + (player.traits.pass_vision * 0.10)
+            - role_penalty
         )
+        weight *= _shooter_distribution_weight(context, player)
         weighted_candidates.append((player, max(0.1, weight)))
     return _weighted_choice(rng, weighted_candidates, default=_get_player(context, context.offense_lineup.player_ids[0]))
 
@@ -1038,21 +1041,26 @@ def _resolve_kickout_action(
     upstream_advantage: float,
     rng: random.Random,
 ) -> dict[str, object]:
+    closeout_attack_bias = (context.offensive_tactics.closeout_attack_rate - 0.5) * 0.35
+    second_side_bias = (context.offensive_tactics.second_side_rate - 0.25) * 0.45
     attack_closeout_prob = _clamp(
         0.24
         + max(0.0, upstream_advantage - 0.45) * 0.85
         + ((receiver.traits.separation - 10.0) / 10.0) * 0.18
         + ((receiver.traits.burst - 10.0) / 10.0) * 0.14
         - ((receiver.traits.catch_shoot - 10.0) / 10.0) * 0.12,
-        0.12,
-        0.56,
+        0.12 + closeout_attack_bias,
+        0.56 + closeout_attack_bias,
     )
+    attack_closeout_prob = _clamp(attack_closeout_prob, 0.10, 0.68)
     reset_prob = _clamp(
         0.08
         + max(0.0, 0.54 - upstream_advantage) * 0.25
-        + max(0.0, (11.0 - receiver.traits.separation) / 20.0),
-        0.05,
-        0.20,
+        + max(0.0, (11.0 - receiver.traits.separation) / 20.0)
+        + second_side_bias
+        - (closeout_attack_bias * 0.4),
+        0.12,
+        0.32,
     )
     draw = rng.random()
     if draw < attack_closeout_prob:
@@ -1077,7 +1085,7 @@ def _resolve_kickout_action(
                     "result_type": "nested_action",
                     "events": (reset_pass,),
                     "result": resolve_drive_attempt(context, secondary, secondary_defender, help_defender, rng),
-                    "assister_id": None,
+                    "assister_id": receiver.player_id if receiver.traits.pass_vision + receiver.traits.pass_accuracy >= 22.0 else None,
                     "default_off_rebounder": receiver,
                     "defender": secondary_defender,
                 }
@@ -1091,11 +1099,11 @@ def _resolve_kickout_action(
                     off_screen=False,
                     shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
                 ),
-                "assister_id": None,
+                "assister_id": receiver.player_id if receiver.traits.pass_vision + receiver.traits.pass_accuracy >= 24.0 else None,
                 "default_off_rebounder": receiver,
                 "defender": secondary_defender,
             }
-    return resolve_catch_and_shoot(receiver, shot_defender, upstream_advantage, rng)
+    return resolve_catch_and_shoot(context, receiver, shot_defender, upstream_advantage, rng)
 
 
 def _secondary_creator(context: PossessionContext, exclude_ids: set[str]) -> PlayerSimProfile | None:
@@ -1212,23 +1220,24 @@ def _foul_branch_scale(
 ) -> float:
     defender_discipline = defender.traits.foul_discipline if defender else 10.0
     foul_draw_rating = _clamp(attacker.traits.foul_drawing, 1.0, 20.0)
-    draw_factor = ((foul_draw_rating - 1.0) / 19.0) ** 1.65
+    draw_factor = ((foul_draw_rating - 1.0) / 19.0) ** 2.3
     discipline_edge = (10.0 - defender_discipline) / 10.0
     advantage_edge = advantage - 0.5
-    scale = 0.44 + (draw_factor * 0.58) + (discipline_edge * 0.16) + (advantage_edge * 0.10) + (switch_bonus * 0.34)
-    return _clamp(scale, 0.14, 1.12)
+    scale = 0.28 + (draw_factor * 0.76) + (discipline_edge * 0.14) + (advantage_edge * 0.08) + (switch_bonus * 0.22)
+    return _clamp(scale, 0.10, 1.08)
 
 
 def _choose_drive_foul_type(attacker: PlayerSimProfile, advantage: float, rng: random.Random) -> FoulOutcomeType:
-    and_one_rate = _clamp(0.08 + ((attacker.traits.finishing - 10.0) / 20.0) * 0.12 + ((advantage - 0.5) * 0.10), 0.05, 0.22)
+    and_one_rate = _clamp(0.15 + ((attacker.traits.finishing - 10.0) / 20.0) * 0.10 + ((advantage - 0.5) * 0.07), 0.09, 0.28)
     if rng.random() < and_one_rate:
         return FoulOutcomeType.AND_ONE
     return FoulOutcomeType.TWO_SHOT
 
 
 def _choose_perimeter_foul_type(handler: PlayerSimProfile, rng: random.Random) -> FoulOutcomeType:
-    three_shot_rate = _clamp(0.03 + ((handler.traits.pullup_shooting - 10.0) / 10.0) * 0.07, 0.02, 0.12)
-    and_one_rate = _clamp(0.03 + ((handler.traits.finishing - 10.0) / 10.0) * 0.04, 0.02, 0.08)
+    foul_draw_level = _clamp((handler.traits.foul_drawing - 1.0) / 19.0, 0.0, 1.0)
+    three_shot_rate = _clamp(0.015 + ((handler.traits.pullup_shooting - 10.0) / 10.0) * 0.025 + (foul_draw_level * 0.02), 0.01, 0.05)
+    and_one_rate = _clamp(0.06 + ((handler.traits.finishing - 10.0) / 10.0) * 0.05 + (foul_draw_level * 0.03), 0.04, 0.11)
     draw = rng.random()
     if draw < three_shot_rate:
         return FoulOutcomeType.THREE_SHOT
@@ -1237,8 +1246,18 @@ def _choose_perimeter_foul_type(handler: PlayerSimProfile, rng: random.Random) -
     return FoulOutcomeType.TWO_SHOT
 
 
-def _corner_three_probability(shooter: PlayerSimProfile, upstream_advantage: float) -> float:
-    probability = 0.18
+def _shooter_distribution_weight(context: PossessionContext, player: PlayerSimProfile) -> float:
+    weights = context.offensive_tactics.shooter_distribution_weights
+    if player.player_id in weights:
+        return max(0.1, weights[player.player_id])
+    role_key = player.offensive_role.value
+    if role_key in weights:
+        return max(0.1, weights[role_key])
+    return 1.0
+
+
+def _corner_three_probability(context: PossessionContext, shooter: PlayerSimProfile, upstream_advantage: float) -> float:
+    probability = 0.225
     if shooter.offensive_role in {OffensiveRole.MOVEMENT_SHOOTER, OffensiveRole.SPACER}:
         probability += 0.10
     if shooter.traits.catch_shoot >= 14.0:
@@ -1247,8 +1266,9 @@ def _corner_three_probability(shooter: PlayerSimProfile, upstream_advantage: flo
         probability -= 0.04
     if shooter.traits.separation >= 12.0:
         probability -= 0.04
-    probability += max(0.0, upstream_advantage - 0.56) * 0.18
-    return _clamp(probability, 0.08, 0.34)
+    probability += max(0.0, upstream_advantage - 0.56) * 0.10
+    probability += (context.offensive_tactics.corner_spacing_bias - 0.5) * 0.20
+    return _clamp(probability, 0.10, 0.37)
 
 
 def _is_assist_eligible(events: tuple[EventContext, ...], shot_type: ShotType) -> bool:

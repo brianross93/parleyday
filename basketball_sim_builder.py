@@ -135,6 +135,43 @@ def _build_team_tactics(
     switch_rate = _bounded((avg_switchability * 0.42), 0.12, 0.48)
     drop_rate = _bounded(0.48 + ((0.55 - avg_switchability) * 0.24), 0.2, 0.62)
     crash_glass_rate = _bounded(0.16 + ((opp_orb - 0.26) * 0.6), 0.1, 0.3)
+    sorted_loads = sorted((player.traits.offensive_load for player in team_players), reverse=True)
+    load_gap = (sorted_loads[0] - sorted_loads[1]) if len(sorted_loads) > 1 else 0.0
+    star_usage_bias = _bounded(1.0 + (load_gap / 12.0), 1.0, 1.55)
+    closeout_attack_rate = _bounded(
+        0.34
+        + (_avg((player.traits.separation + player.traits.burst) / 2.0 for player in team_players) / 20.0) * 0.22
+        - (_avg(player.traits.catch_shoot for player in team_players) / 20.0) * 0.08,
+        0.26,
+        0.64,
+    )
+    second_side_rate = _bounded(
+        0.14
+        + (_avg((player.traits.pass_vision + player.traits.pass_accuracy) / 2.0 for player in team_players) / 20.0) * 0.18
+        + (_avg(player.traits.decision_making for player in team_players) / 20.0) * 0.08,
+        0.12,
+        0.42,
+    )
+    spacer_share = sum(1 for player in team_players if player.offensive_role in {OffensiveRole.SPACER, OffensiveRole.MOVEMENT_SHOOTER}) / max(len(team_players), 1)
+    corner_spacing_bias = _bounded(
+        0.42
+        + spacer_share * 0.18
+        + (_avg(player.traits.catch_shoot for player in team_players) / 20.0) * 0.08
+        - (_avg(player.traits.size for player in team_players) / 20.0) * 0.06,
+        0.30,
+        0.72,
+    )
+    shooter_distribution_weights = {
+        player.player_id: _bounded(
+            0.88
+            + (player.traits.catch_shoot / 20.0) * 0.22
+            + (0.12 if player.offensive_role in {OffensiveRole.SPACER, OffensiveRole.MOVEMENT_SHOOTER} else 0.0)
+            - (0.08 if player.offensive_role == OffensiveRole.ROLL_BIG else 0.0),
+            0.72,
+            1.28,
+        )
+        for player in team_players
+    }
     return TeamTactics(
         pace_target=pace_target,
         transition_frequency=transition_frequency,
@@ -162,6 +199,11 @@ def _build_team_tactics(
             DefensiveCoverage.DROP: drop_rate,
             DefensiveCoverage.SWITCH: switch_rate,
         },
+        star_usage_bias=star_usage_bias,
+        closeout_attack_rate=closeout_attack_rate,
+        second_side_rate=second_side_rate,
+        corner_spacing_bias=corner_spacing_bias,
+        shooter_distribution_weights=shooter_distribution_weights,
     )
 
 

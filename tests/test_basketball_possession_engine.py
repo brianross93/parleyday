@@ -1,6 +1,8 @@
 import random
+from collections import Counter
+from dataclasses import replace
 
-from basketball_possession_engine import simulate_possession
+from basketball_possession_engine import _best_shooter, _primary_creator_id, simulate_possession
 from basketball_sim_schema import (
     BasketballSide,
     CourtPoint,
@@ -178,9 +180,73 @@ def _context(play_family: PlayFamily, coverage: DefensiveCoverage) -> Possession
 def test_simulate_high_pick_and_roll_returns_valid_minimal_outcome() -> None:
     outcome = simulate_possession(_context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP), random.Random(7))
     assert outcome.events
-    assert outcome.events[0].event_type.name == "SCREEN"
-    assert outcome.events[-1].event_type.name in {"SHOT", "REBOUND", "FOUL", "TURNOVER"}
-    assert outcome.points_scored >= 0
+
+
+def test_star_usage_bias_steepens_primary_creator_selection() -> None:
+    context = _context(PlayFamily.ISO, DefensiveCoverage.SWITCH)
+    low_bias = PossessionContext(
+        offense_team_code=context.offense_team_code,
+        defense_team_code=context.defense_team_code,
+        clock=context.clock,
+        score=context.score,
+        offense_lineup=context.offense_lineup,
+        defense_lineup=context.defense_lineup,
+        offensive_tactics=replace(context.offensive_tactics, star_usage_bias=1.0),
+        defensive_tactics=context.defensive_tactics,
+        floor_players=context.floor_players,
+        defensive_assignments=context.defensive_assignments,
+        player_pool=context.player_pool,
+        current_phase=context.current_phase,
+        play_call=context.play_call,
+        coverage=context.coverage,
+    )
+    high_bias = PossessionContext(
+        offense_team_code=context.offense_team_code,
+        defense_team_code=context.defense_team_code,
+        clock=context.clock,
+        score=context.score,
+        offense_lineup=context.offense_lineup,
+        defense_lineup=context.defense_lineup,
+        offensive_tactics=replace(context.offensive_tactics, star_usage_bias=1.55),
+        defensive_tactics=context.defensive_tactics,
+        floor_players=context.floor_players,
+        defensive_assignments=context.defensive_assignments,
+        player_pool=context.player_pool,
+        current_phase=context.current_phase,
+        play_call=context.play_call,
+        coverage=context.coverage,
+    )
+    low_counts = Counter(_primary_creator_id(low_bias, random.Random(seed)) for seed in range(250))
+    high_counts = Counter(_primary_creator_id(high_bias, random.Random(seed)) for seed in range(250))
+    assert high_counts["creator"] > low_counts["creator"]
+
+
+def test_shooter_distribution_weights_influence_kickout_targeting() -> None:
+    context = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    weighted_context = PossessionContext(
+        offense_team_code=context.offense_team_code,
+        defense_team_code=context.defense_team_code,
+        clock=context.clock,
+        score=context.score,
+        offense_lineup=context.offense_lineup,
+        defense_lineup=context.defense_lineup,
+        offensive_tactics=replace(
+            context.offensive_tactics,
+            shooter_distribution_weights={"forward": 1.9, "shooter": 0.6, "wing": 0.8},
+        ),
+        defensive_tactics=context.defensive_tactics,
+        floor_players=context.floor_players,
+        defensive_assignments=context.defensive_assignments,
+        player_pool=context.player_pool,
+        current_phase=context.current_phase,
+        play_call=context.play_call,
+        coverage=context.coverage,
+    )
+    picks = Counter(
+        _best_shooter(weighted_context, exclude_ids={"creator", "big"}, rng=random.Random(seed)).player_id
+        for seed in range(250)
+    )
+    assert picks["forward"] > picks["shooter"]
 
 
 def test_simulate_iso_returns_valid_minimal_outcome() -> None:

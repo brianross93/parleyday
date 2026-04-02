@@ -41,6 +41,13 @@ class DraftKingsNBAProjection:
     assists: float
     availability_status: str
     availability_source: str
+    recent_games_sample: float = 0.0
+    recent_minutes_avg: float = 0.0
+    participation_rate: float = 0.0
+    role_stability: float = 0.0
+    recent_fpts_avg: float = 0.0
+    recent_fpts_weighted: float = 0.0
+    recent_form_delta: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -63,7 +70,11 @@ def build_nba_dk_projections(date_str: str, slate: DraftKingsSlate) -> list[Draf
         return []
     team_form = load_team_form_snapshot(date_str, "nba")
     game_cache: dict[str, dict[str, DraftKingsNBAProjection]] = {}
-    live_profile_statuses = _load_live_nba_profile_statuses(date_str, slate)
+    live_profile_lookup = _load_live_nba_profiles(date_str, slate)
+    live_profile_statuses = {
+        key: (_profile_injury_status(profile), "live_profile")
+        for key, profile in live_profile_lookup.items()
+    }
     injury_context_by_game = _load_fallback_nba_injury_context(date_str, slate)
     projections: list[DraftKingsNBAProjection] = []
     for player in slate.players:
@@ -71,7 +82,12 @@ def build_nba_dk_projections(date_str: str, slate: DraftKingsSlate) -> list[Draf
         if not game or "@" not in game:
             continue
         if game not in game_cache:
-            game_cache[game] = _build_game_projection_lookup(date_str, game, team_form)
+            game_cache[game] = _build_game_projection_lookup(
+                date_str,
+                game,
+                team_form,
+                live_profile_lookup=live_profile_lookup,
+            )
         lookup = game_cache.get(game, {})
         projected = lookup.get(dfs_name_key(player.name))
         if projected is None:
@@ -80,14 +96,24 @@ def build_nba_dk_projections(date_str: str, slate: DraftKingsSlate) -> list[Draf
                 live_profile_statuses=live_profile_statuses,
                 injury_context=injury_context_by_game.get(game),
             )
-            projected = _fallback_projection(player, fallback_status=fallback_status)
+            projected = _fallback_projection(
+                player,
+                fallback_status=fallback_status,
+                live_profile=live_profile_lookup.get((player.team, dfs_name_key(player.name))),
+            )
         if projected.availability_status == "out":
             continue
         projections.append(projected)
     return sorted(projections, key=lambda item: (item.median_fpts, -item.salary), reverse=True)
 
 
-def _build_game_projection_lookup(date_str: str, game: str, team_form: dict[str, dict]) -> dict[str, DraftKingsNBAProjection]:
+def _build_game_projection_lookup(
+    date_str: str,
+    game: str,
+    team_form: dict[str, dict],
+    *,
+    live_profile_lookup: dict[tuple[str, str], dict[str, object]],
+) -> dict[str, DraftKingsNBAProjection]:
     away_code, home_code = game.split("@", 1)
     matchup_features = load_nba_matchup_features(date_str, (away_code, home_code))
     game_context = load_game_context_snapshot(date_str, "nba", game) or {}
@@ -119,7 +145,8 @@ def _build_game_projection_lookup(date_str: str, game: str, team_form: dict[str,
         if team_context is None:
             continue
         side_key = "away" if team_context.code == away_code else "home"
-        confidence = 0.68 if availability.get(f"{side_key}_submitted", False) else 0.54
+        side_submitted = _availability_side_submitted(availability, side_key)
+        confidence = 0.68 if side_submitted else 0.54
         side_status_lookup = nba_availability_status_lookup(availability.get(side_key, []))
         raw_profile_lookup = {
             dfs_name_key(str(item.get("name") or "")): item
@@ -128,9 +155,10 @@ def _build_game_projection_lookup(date_str: str, game: str, team_form: dict[str,
         }
         for profile in team_context.players:
             raw_profile = raw_profile_lookup.get(dfs_name_key(profile.name), {})
+            live_profile = live_profile_lookup.get((team_context.code, dfs_name_key(profile.name)), {})
             status = side_status_lookup.get(
                 canonicalize_player_name(profile.name),
-                _profile_injury_status(raw_profile or profile),
+                _profile_injury_status(live_profile or raw_profile or profile),
             )
             adjusted = _apply_availability_discount(
                 float(profile.minutes),
@@ -147,7 +175,10 @@ def _build_game_projection_lookup(date_str: str, game: str, team_form: dict[str,
                 team_features=matchup_features.get(team_context.code, {}),
                 opponent_features=matchup_features.get(opponent, {}),
             )
+            role_meta = _profile_role_meta(live_profile or raw_profile)
+            form_meta = _profile_form_meta(live_profile or raw_profile)
             median = draftkings_nba_fpts(adjusted["points"], adjusted["rebounds"], adjusted["assists"])
+            median *= _recent_form_scale(form_meta["recent_fpts_avg"], form_meta["recent_fpts_weighted"])
             volatility = _estimate_volatility(adjusted["minutes"], adjusted["points"], adjusted["rebounds"], adjusted["assists"])
             projection = DraftKingsNBAProjection(
                 player_id="",
@@ -169,6 +200,13 @@ def _build_game_projection_lookup(date_str: str, game: str, team_form: dict[str,
                 assists=adjusted["assists"],
                 availability_status=status,
                 availability_source="game_context" if canonicalize_player_name(profile.name) in side_status_lookup else "profile",
+                recent_games_sample=role_meta["games_sample"],
+                recent_minutes_avg=role_meta["recent_minutes_avg"],
+                participation_rate=role_meta["participation_rate"],
+                role_stability=role_meta["role_stability"],
+                recent_fpts_avg=form_meta["recent_fpts_avg"],
+                recent_fpts_weighted=form_meta["recent_fpts_weighted"],
+                recent_form_delta=form_meta["recent_form_delta"],
             )
             results[dfs_name_key(profile.name)] = projection
     return results
@@ -234,11 +272,16 @@ def _fallback_projection(
     player: DraftKingsPlayer,
     *,
     fallback_status: tuple[str, str] | None = None,
+    live_profile: dict[str, object] | None = None,
 ) -> DraftKingsNBAProjection:
     avg = float(player.avg_points_per_game)
     status, source = fallback_status or ("unknown", "fallback")
-    adjusted = _apply_availability_discount(32.0, avg * 0.52, avg * 0.24, avg * 0.16, status)
+    role_meta = _profile_role_meta(live_profile or {})
+    form_meta = _profile_form_meta(live_profile or {})
+    base_minutes = float(role_meta["recent_minutes_avg"] or 32.0 or 32.0)
+    adjusted = _apply_availability_discount(base_minutes, avg * 0.52, avg * 0.24, avg * 0.16, status)
     median = avg if status == "active" else draftkings_nba_fpts(adjusted["points"], adjusted["rebounds"], adjusted["assists"])
+    median *= _recent_form_scale(form_meta["recent_fpts_avg"], form_meta["recent_fpts_weighted"])
     volatility = 0.32
     return DraftKingsNBAProjection(
         player_id=player.player_id,
@@ -260,6 +303,13 @@ def _fallback_projection(
         assists=adjusted["assists"],
         availability_status=status,
         availability_source=source,
+        recent_games_sample=role_meta["games_sample"],
+        recent_minutes_avg=role_meta["recent_minutes_avg"],
+        participation_rate=role_meta["participation_rate"],
+        role_stability=role_meta["role_stability"],
+        recent_fpts_avg=form_meta["recent_fpts_avg"],
+        recent_fpts_weighted=form_meta["recent_fpts_weighted"],
+        recent_form_delta=form_meta["recent_form_delta"],
     )
 
 
@@ -277,7 +327,7 @@ def _load_fallback_nba_injury_context(date_str: str, slate: DraftKingsSlate) -> 
         return {}
 
 
-def _load_live_nba_profile_statuses(date_str: str, slate: DraftKingsSlate) -> dict[tuple[str, str], tuple[str, str]]:
+def _load_live_nba_profiles(date_str: str, slate: DraftKingsSlate) -> dict[tuple[str, str], dict[str, object]]:
     slate_games = sorted({str(player.game or "").strip() for player in slate.players if str(player.game or "").strip()})
     if not slate_games:
         return {}
@@ -285,7 +335,7 @@ def _load_live_nba_profile_statuses(date_str: str, slate: DraftKingsSlate) -> di
         contexts = [ctx for ctx in fetch_nba_game_contexts(date_str) if str(ctx.get("matchup") or "").strip() in slate_games]
     except Exception:
         return {}
-    statuses: dict[tuple[str, str], tuple[str, str]] = {}
+    profiles_by_key: dict[tuple[str, str], dict[str, object]] = {}
     for context in contexts:
         for side, team_key in (("away", "away_team_id"), ("home", "home_team_id")):
             team_id = context.get(team_key)
@@ -300,9 +350,8 @@ def _load_live_nba_profile_statuses(date_str: str, slate: DraftKingsSlate) -> di
                 name = str(profile.get("name") or "").strip()
                 if not name:
                     continue
-                status = _profile_injury_status(profile)
-                statuses[(team_code, dfs_name_key(name))] = (status, "live_profile")
-    return statuses
+                profiles_by_key[(team_code, dfs_name_key(name))] = dict(profile)
+    return profiles_by_key
 
 
 def _fallback_status_from_sources(
@@ -363,6 +412,16 @@ def _profile_injury_status(profile) -> str:
     return str(raw_status or "active").strip().lower()
 
 
+def _availability_side_submitted(availability: dict, side_key: str) -> bool:
+    direct = availability.get(f"{side_key}_submitted")
+    if isinstance(direct, bool):
+        return direct
+    side_value = availability.get(side_key)
+    if isinstance(side_value, dict):
+        return bool(side_value.get("submitted"))
+    return False
+
+
 def _apply_availability_discount(minutes: float, points: float, rebounds: float, assists: float, status: str) -> dict[str, float]:
     status = str(status or "").strip().lower()
     minutes_scale = {
@@ -400,6 +459,47 @@ def _adjust_confidence_for_status(confidence: float, status: str) -> float:
     return confidence
 
 
+def _profile_role_meta(profile: dict | object) -> dict[str, float]:
+    games_sample = _safe_profile_float(profile, "games_sample")
+    recent_minutes_avg = _safe_profile_float(profile, "minutes")
+    participation_rate = max(0.0, min(1.0, games_sample / 8.0)) if games_sample > 0.0 else 0.0
+    normalized_minutes = max(0.0, min(1.0, recent_minutes_avg / 30.0)) if recent_minutes_avg > 0.0 else 0.0
+    role_stability = participation_rate * normalized_minutes
+    return {
+        "games_sample": games_sample,
+        "recent_minutes_avg": recent_minutes_avg,
+        "participation_rate": participation_rate,
+        "role_stability": role_stability,
+    }
+
+
+def _profile_form_meta(profile: dict | object) -> dict[str, float]:
+    recent_fpts_avg = _safe_profile_float(profile, "recent_fpts_avg")
+    recent_fpts_weighted = _safe_profile_float(profile, "recent_fpts_weighted")
+    return {
+        "recent_fpts_avg": recent_fpts_avg,
+        "recent_fpts_weighted": recent_fpts_weighted,
+        "recent_form_delta": recent_fpts_weighted - recent_fpts_avg,
+    }
+
+
+def _recent_form_scale(recent_fpts_avg: float, recent_fpts_weighted: float) -> float:
+    if recent_fpts_avg <= 0.0 or recent_fpts_weighted <= 0.0:
+        return 1.0
+    return max(0.94, min(1.08, recent_fpts_weighted / recent_fpts_avg))
+
+
+def _safe_profile_float(profile: dict | object, field: str) -> float:
+    if isinstance(profile, dict):
+        value = profile.get(field)
+    else:
+        value = getattr(profile, field, 0.0)
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def attach_salary_metadata(
     slate: DraftKingsSlate,
     projections: Iterable[DraftKingsNBAProjection],
@@ -432,6 +532,13 @@ def attach_salary_metadata(
                 assists=projection.assists,
                 availability_status=projection.availability_status,
                 availability_source=projection.availability_source,
+                recent_games_sample=projection.recent_games_sample,
+                recent_minutes_avg=projection.recent_minutes_avg,
+                participation_rate=projection.participation_rate,
+                role_stability=projection.role_stability,
+                recent_fpts_avg=projection.recent_fpts_avg,
+                recent_fpts_weighted=projection.recent_fpts_weighted,
+                recent_form_delta=projection.recent_form_delta,
             )
         )
     return enriched
@@ -470,6 +577,10 @@ def optimize_nba_classic_lineups(
         if item.availability_status != "out"
         and dfs_name_key(item.name) not in excluded_keys
     ]
+    if normalized_contest == "cash":
+        cash_safe = [item for item in eligible if _is_cash_role_viable(item)]
+        if len(cash_safe) >= 8:
+            eligible = cash_safe
     ranked_eligible = sorted(
         eligible,
         key=lambda item: (
@@ -612,6 +723,25 @@ def optimize_nba_classic_lineups(
     return lineups[:limit]
 
 
+def _is_cash_role_viable(player: DraftKingsNBAProjection) -> bool:
+    salary = float(player.salary or 0.0)
+    status = str(player.availability_status or "").strip().lower()
+    if status not in {"active", "probable", "available"}:
+        return False
+    if salary >= 6500:
+        return True
+    role_stability = float(player.role_stability or 0.0)
+    recent_minutes = float(player.recent_minutes_avg or 0.0)
+    games_sample = float(player.recent_games_sample or 0.0)
+    if role_stability <= 0.0 and recent_minutes <= 0.0 and games_sample <= 0.0:
+        return salary > 4000
+    if salary <= 4000 and (role_stability < 0.58 or recent_minutes < 22.0 or games_sample < 6.0):
+        return False
+    if salary <= 5500 and (role_stability < 0.45 or recent_minutes < 18.0 or games_sample < 5.0):
+        return False
+    return True
+
+
 def _lineup_pool_score(
     player: DraftKingsNBAProjection,
     contest_type: str,
@@ -630,6 +760,7 @@ def _lineup_pool_score(
     one_off_bonus = 2.0 if name_key in one_off_keys else 0.0
     base_conf = player.projection_confidence * 8.0
     environment_bonus = float(game_boosts.get(player.game, 0.0) or 0.0)
+    recent_form_bonus = _recent_form_bonus(player, contest_type)
     if contest_type == "large_field_gpp":
         return (
             player.ceiling_fpts
@@ -639,6 +770,7 @@ def _lineup_pool_score(
             + stack_bonus
             + bring_back_bonus
             + one_off_bonus
+            + recent_form_bonus
             + (environment_bonus * 11.0)
             - fade_penalty
         )
@@ -650,6 +782,7 @@ def _lineup_pool_score(
             + (stack_bonus * 0.85)
             + (bring_back_bonus * 0.75)
             + one_off_bonus
+            + recent_form_bonus
             + (environment_bonus * 8.0)
             - fade_penalty
         )
@@ -660,9 +793,46 @@ def _lineup_pool_score(
         + (stack_bonus * 0.25)
         + (bring_back_bonus * 0.25)
         + (one_off_bonus * 0.4)
+        + recent_form_bonus
         + (environment_bonus * 4.5)
+        - _cash_fragility_penalty(player)
         - fade_penalty
     )
+
+
+def _cash_fragility_penalty(player: DraftKingsNBAProjection) -> float:
+    salary = float(player.salary or 0.0)
+    if salary > 6000:
+        return 0.0
+    recent_minutes = float(player.recent_minutes_avg or 0.0)
+    games_sample = float(player.recent_games_sample or 0.0)
+    role_stability = float(player.role_stability or 0.0)
+    if recent_minutes <= 0.0 and games_sample <= 0.0 and role_stability <= 0.0:
+        return 2.5 if salary <= 4000 else 0.0
+    penalty = 0.0
+    if salary <= 4000:
+        penalty += max(0.0, 22.0 - recent_minutes) * 0.45
+        penalty += max(0.0, 6.0 - games_sample) * 1.0
+        penalty += max(0.0, 0.58 - role_stability) * 10.0
+    elif salary <= 5500:
+        penalty += max(0.0, 18.0 - recent_minutes) * 0.25
+        penalty += max(0.0, 5.0 - games_sample) * 0.7
+        penalty += max(0.0, 0.45 - role_stability) * 6.0
+    # Cheap low-floor players are more damaging in cash than median alone implies.
+    if salary <= 5000:
+        penalty += max(0.0, 18.0 - float(player.floor_fpts or 0.0)) * 0.18
+    return penalty
+
+
+def _recent_form_bonus(player: DraftKingsNBAProjection, contest_type: str) -> float:
+    if player.recent_fpts_avg <= 0.0 or player.recent_fpts_weighted <= 0.0:
+        return 0.0
+    form_ratio = max(0.92, min(1.10, player.recent_fpts_weighted / player.recent_fpts_avg))
+    form_edge = form_ratio - 1.0
+    if abs(form_edge) < 0.01:
+        return 0.0
+    scale = 42.0 if contest_type == "cash" else 26.0
+    return form_edge * scale
 
 
 def _focus_bonus(player: DraftKingsNBAProjection, contest_type: str, is_focus: bool) -> float:

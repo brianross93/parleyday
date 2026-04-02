@@ -395,6 +395,42 @@
         </section>
         {% endif %}
 
+        {% if result.best_clear_lineup %}
+        <section class="card" style="margin-top: 18px;">
+          <div class="lineup-head">
+            <h3>Best Clear Availability Build</h3>
+            <div>
+              <strong>{{ "%.1f"|format(result.best_clear_lineup.median_fpts) }}</strong>
+              <span class="meta">expected points</span>
+            </div>
+          </div>
+          <div class="row-meta" style="margin-top: 10px;">
+            <span class="chip">Salary used: {{ result.best_clear_lineup.salary_used }}</span>
+            <span class="chip">Salary left: {{ result.best_clear_lineup.salary_remaining }}</span>
+            <span class="chip">Ceiling: {{ "%.1f"|format(result.best_clear_lineup.ceiling_fpts) }}</span>
+            <span class="chip">Floor: {{ "%.1f"|format(result.best_clear_lineup.floor_fpts) }}</span>
+          </div>
+          <div class="lineup-grid" style="margin-top: 12px;">
+            {% for slot in result.best_clear_lineup.slots %}
+              <div class="slot-row">
+                <div>
+                  <div class="slot-name">{{ slot.slot }} Ã‚Â· {{ slot.name }}</div>
+                  <div class="meta">{{ slot.team }} vs {{ slot.opponent }}</div>
+                  <div class="availability availability--{{ slot.availability_status|lower|replace('_', '-') }}">
+                    {{ slot.availability_status }} Ã‚Â· {{ slot.availability_source }}
+                  </div>
+                </div>
+                <div style="text-align: right;">
+                  <div><strong>{{ slot.salary }}</strong></div>
+                  <div class="meta">{{ "%.1f"|format(slot.median_fpts) }} median</div>
+                  <div class="meta">{{ "%.1f"|format(slot.ceiling_fpts) }} ceiling</div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+        {% endif %}
+
         {% if result.best_value_lineup %}
         <section class="card" style="margin-top: 18px;">
           <div class="lineup-head">

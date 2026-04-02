@@ -6,6 +6,7 @@ from dfs_nba import (
     _fallback_projection,
     _fallback_status_from_injury_context,
     _is_valid_nba_classic_lineup,
+    _recent_form_bonus,
     attach_salary_metadata,
     draftkings_nba_fpts,
     optimize_nba_classic_lineups,
@@ -65,6 +66,13 @@ def test_attach_salary_metadata_merges_player_pool_fields() -> None:
             assists=6.0,
             availability_status="active",
             availability_source="profile",
+            recent_games_sample=8.0,
+            recent_minutes_avg=34.0,
+            participation_rate=1.0,
+            role_stability=1.0,
+            recent_fpts_avg=34.0,
+            recent_fpts_weighted=36.0,
+            recent_form_delta=2.0,
         )
     ]
 
@@ -185,6 +193,13 @@ def test_optimize_nba_classic_lineups_excludes_out_players() -> None:
         assists=0.0,
         availability_status="out",
         availability_source="profile",
+        recent_games_sample=0.0,
+        recent_minutes_avg=0.0,
+        participation_rate=0.0,
+        role_stability=0.0,
+        recent_fpts_avg=0.0,
+        recent_fpts_weighted=0.0,
+        recent_form_delta=0.0,
     )
     lineups = optimize_nba_classic_lineups(pool + [out_player], salary_cap=50000, max_candidates=10, limit=3)
     assert lineups
@@ -203,10 +218,45 @@ def test_optimize_nba_classic_lineups_keeps_unknown_players_eligible() -> None:
         _player("U1", 5500, ("PG", "SG"), median=34),
     ]
     unknown_player = _player("UNKNOWN1", 3000, ("PG",), median=45, status="unknown")
-    lineups = optimize_nba_classic_lineups(pool + [unknown_player], salary_cap=50000, max_candidates=10, limit=3)
+    lineups = optimize_nba_classic_lineups(pool + [unknown_player], salary_cap=50000, max_candidates=10, limit=3, contest_type="large_field_gpp")
     assert lineups
     assert any(any(player.name == "UNKNOWN1" for player in lineup.players) for lineup in lineups)
     assert any(lineup.unknown_count > 0 for lineup in lineups)
+
+
+def test_optimize_nba_classic_lineups_cash_filters_low_role_punts() -> None:
+    core = [
+        _player("PG1", 6200, ("PG",), median=42),
+        _player("SG1", 6100, ("SG",), median=40),
+        _player("SF1", 6000, ("SF",), median=39),
+        _player("PF1", 5900, ("PF",), median=38),
+        _player("C1", 5800, ("C",), median=37),
+        _player("G1", 5700, ("PG", "SG"), median=36),
+        _player("F1", 5600, ("SF", "PF"), median=35),
+        _player("U1", 5500, ("PG", "SG"), median=34),
+    ]
+    low_role = _player(
+        "LOW_ROLE",
+        3200,
+        ("SF",),
+        median=20,
+        recent_games_sample=2.0,
+        recent_minutes_avg=11.0,
+        participation_rate=0.25,
+        role_stability=0.09,
+    )
+    lineups = optimize_nba_classic_lineups(core + [low_role], salary_cap=50000, max_candidates=9, limit=3, contest_type="cash")
+    assert lineups
+    assert all(all(player.name != "LOW_ROLE" for player in lineup.players) for lineup in lineups)
+
+
+def test_recent_form_bonus_prefers_hotter_recent_run() -> None:
+    hot = _player("HOT", 5600, ("SG",), median=30.0)
+    cold = _player("COLD", 5600, ("SG",), median=30.0)
+    hot = DraftKingsNBAProjection(**{**hot.__dict__, "recent_fpts_avg": 28.0, "recent_fpts_weighted": 31.5, "recent_form_delta": 3.5})
+    cold = DraftKingsNBAProjection(**{**cold.__dict__, "recent_fpts_avg": 28.0, "recent_fpts_weighted": 24.5, "recent_form_delta": -3.5})
+    assert _recent_form_bonus(hot, "cash") > 0.0
+    assert _recent_form_bonus(cold, "cash") < 0.0
 
 
 def test_fallback_status_defaults_to_active_when_team_submitted_and_player_not_listed() -> None:
@@ -289,6 +339,13 @@ def _player(
     *,
     median: float = 30.0,
     status: str = "active",
+    recent_games_sample: float = 8.0,
+    recent_minutes_avg: float = 32.0,
+    participation_rate: float = 1.0,
+    role_stability: float = 1.0,
+    recent_fpts_avg: float = 30.0,
+    recent_fpts_weighted: float = 30.0,
+    recent_form_delta: float = 0.0,
 ) -> DraftKingsNBAProjection:
     return DraftKingsNBAProjection(
         player_id=name,
@@ -310,4 +367,11 @@ def _player(
         assists=5.0,
         availability_status=status,
         availability_source="profile",
+        recent_games_sample=recent_games_sample,
+        recent_minutes_avg=recent_minutes_avg,
+        participation_rate=participation_rate,
+        role_stability=role_stability,
+        recent_fpts_avg=recent_fpts_avg,
+        recent_fpts_weighted=recent_fpts_weighted,
+        recent_form_delta=recent_form_delta,
     )

@@ -5,6 +5,8 @@ from dfs_nba import DraftKingsLineup, DraftKingsNBAProjection
 from dfs_strategy import (
     _build_nba_hedged_portfolio_lineups,
     _apply_cash_quality_floor,
+    _cash_lineup_robust_score,
+    _is_clear_availability_status,
     _filter_oracle_result_for_dfs_slate,
     build_mlb_contest_lineups,
     build_nba_contest_lineups,
@@ -697,6 +699,45 @@ def test_apply_cash_quality_floor_drops_weak_tail() -> None:
     assert filtered == [strong]
 
 
+def test_cash_lineup_robust_score_penalizes_cheap_same_game_value_chain() -> None:
+    safe = DraftKingsLineup(
+        players=(
+            _projection("Star A", "AAA", "BBB", 9000, ("PG",), median=45.0),
+            _projection("Star B", "CCC", "DDD", 8800, ("C",), median=43.0),
+            _projection("Mid A", "EEE", "FFF", 6500, ("SF",), median=31.0),
+            _projection("Value A", "GGG", "HHH", 4400, ("PF",), median=23.0),
+        ),
+        salary_used=28700,
+        median_fpts=142.0,
+        ceiling_fpts=180.0,
+        floor_fpts=108.0,
+        average_confidence=0.7,
+        unknown_count=0,
+    )
+    fragile = DraftKingsLineup(
+        players=(
+            _projection("Star A", "AAA", "BBB", 9000, ("PG",), median=45.0),
+            _projection("Star B", "CCC", "DDD", 8800, ("C",), median=43.0),
+            _projection("Cheap A", "NYK", "HOU", 3300, ("SG",), median=12.0),
+            _projection("Cheap B", "NYK", "HOU", 3200, ("SF",), median=11.5),
+        ),
+        salary_used=24300,
+        median_fpts=141.5,
+        ceiling_fpts=177.0,
+        floor_fpts=103.0,
+        average_confidence=0.7,
+        unknown_count=0,
+    )
+    assert _cash_lineup_robust_score(safe, game_boosts={}) > _cash_lineup_robust_score(fragile, game_boosts={})
+
+
+def test_is_clear_availability_status_excludes_unknown_and_questionable() -> None:
+    assert _is_clear_availability_status("active")
+    assert _is_clear_availability_status("probable")
+    assert not _is_clear_availability_status("unknown")
+    assert not _is_clear_availability_status("questionable")
+
+
 def _projection(
     name: str,
     team: str,
@@ -727,6 +768,10 @@ def _projection(
         assists=5.0,
         availability_status=status,
         availability_source="profile",
+        recent_games_sample=8.0,
+        recent_minutes_avg=32.0,
+        participation_rate=1.0,
+        role_stability=1.0,
     )
 
 

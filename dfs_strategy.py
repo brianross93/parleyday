@@ -100,7 +100,9 @@ class ThesisDrivenDFSResult:
     game_boosts: dict[str, float]
     lineups: tuple[DraftKingsLineup, ...]
     lineup_cards: tuple[DFSLineupCard, ...]
+    projected_players: tuple[Any, ...] = ()
     best_overall_lineup: DFSLineupCard | None = None
+    best_clear_lineup: DFSLineupCard | None = None
     best_value_lineup: DFSLineupCard | None = None
     lineup_families: tuple[DFSLineupFamily, ...] = ()
 
@@ -486,6 +488,15 @@ def build_nba_contest_lineups(
         game_boosts=game_boosts,
         dfs_guidance=dfs_guidance,
     )
+    best_clear_lineup = _build_best_clear_nba_lineup_card(
+        projections=projections,
+        request_mode=config.request_mode,
+        salary_cap=slate.salary_cap,
+        focus_players=focus_players,
+        fade_players=fade_union,
+        game_boosts=game_boosts,
+        dfs_guidance=dfs_guidance,
+    )
     best_value_lineup = _build_best_value_nba_lineup_card(
         projections=projections,
         request_mode=config.request_mode,
@@ -543,7 +554,9 @@ def build_nba_contest_lineups(
         game_boosts=dict(sorted(game_boosts.items(), key=lambda item: item[1], reverse=True)),
         lineups=tuple(lineups),
         lineup_cards=lineup_cards,
+        projected_players=tuple(projections),
         best_overall_lineup=best_overall_lineup,
+        best_clear_lineup=best_clear_lineup,
         best_value_lineup=best_value_lineup,
         lineup_families=lineup_families,
     )
@@ -611,6 +624,15 @@ def build_mlb_contest_lineups(
         game_boosts=game_boosts,
         dfs_guidance=dfs_guidance,
     )
+    best_clear_lineup = _build_best_clear_mlb_lineup_card(
+        projections=projections,
+        request_mode=config.request_mode,
+        salary_cap=slate.salary_cap,
+        focus_players=focus_players,
+        fade_players=set(fade_players) | set(dfs_guidance["avoid_chalk"]),
+        game_boosts=game_boosts,
+        dfs_guidance=dfs_guidance,
+    )
     best_value_lineup = _build_best_value_mlb_lineup_card(
         projections=projections,
         request_mode=config.request_mode,
@@ -656,7 +678,9 @@ def build_mlb_contest_lineups(
         game_boosts=dict(sorted(game_boosts.items(), key=lambda item: item[1], reverse=True)),
         lineups=tuple(lineups),
         lineup_cards=lineup_cards,
+        projected_players=tuple(projections),
         best_overall_lineup=best_overall_lineup,
+        best_clear_lineup=best_clear_lineup,
         best_value_lineup=best_value_lineup,
     )
 
@@ -913,6 +937,30 @@ def _build_best_value_nba_lineup_card(
         salary_cap=salary_cap,
         focus_players=focus_players,
         fade_players=fade_players,
+    )
+
+
+def _build_best_clear_nba_lineup_card(
+    *,
+    projections: list[DraftKingsNBAProjection],
+    request_mode: str,
+    salary_cap: int,
+    focus_players: set[str],
+    fade_players: set[str],
+    game_boosts: dict[str, float],
+    dfs_guidance: dict[str, Any],
+) -> DFSLineupCard | None:
+    clear_projections = [player for player in projections if _is_clear_availability_status(player.availability_status)]
+    if len(clear_projections) < len(NBA_CLASSIC_SLOTS):
+        return None
+    return _build_best_overall_nba_lineup_card(
+        projections=clear_projections,
+        request_mode=request_mode,
+        salary_cap=salary_cap,
+        focus_players=focus_players,
+        fade_players=fade_players,
+        game_boosts=game_boosts,
+        dfs_guidance=dfs_guidance,
     )
 
 
@@ -1213,6 +1261,30 @@ def _build_best_value_mlb_lineup_card(
     )
 
 
+def _build_best_clear_mlb_lineup_card(
+    *,
+    projections: list[DraftKingsMLBProjection],
+    request_mode: str,
+    salary_cap: int,
+    focus_players: set[str],
+    fade_players: set[str],
+    game_boosts: dict[str, float],
+    dfs_guidance: dict[str, Any],
+) -> DFSLineupCard | None:
+    clear_projections = [player for player in projections if _is_clear_availability_status(player.availability_status)]
+    if len(clear_projections) < len(MLB_CLASSIC_SLOTS):
+        return None
+    return _build_best_overall_mlb_lineup_card(
+        projections=clear_projections,
+        request_mode=request_mode,
+        salary_cap=salary_cap,
+        focus_players=focus_players,
+        fade_players=fade_players,
+        game_boosts=game_boosts,
+        dfs_guidance=dfs_guidance,
+    )
+
+
 def _select_nba_anchor_candidates(
     projections: list[DraftKingsNBAProjection],
     *,
@@ -1322,7 +1394,30 @@ def _cash_lineup_robust_score(
     upside_state = float(lineup.median_fpts) + ((float(lineup.ceiling_fpts) - float(lineup.median_fpts)) * 0.35)
     robustness = (downside_state * 0.45) + (base_state * 0.4) + (upside_state * 0.15)
     confidence = float(getattr(lineup, "average_confidence", 0.0) or 0.0) * 3.0
-    return robustness + (avg_game_boost * 2.5) + confidence
+    cheap_chain_penalty = _cash_cheap_chain_penalty(players)
+    return robustness + (avg_game_boost * 2.5) + confidence - cheap_chain_penalty
+
+
+def _cash_cheap_chain_penalty(players: tuple[Any, ...]) -> float:
+    cheap_players = [player for player in players if float(getattr(player, "salary", 0.0) or 0.0) <= 4500]
+    if not cheap_players:
+        return 0.0
+    penalty = 0.0
+    game_counts: dict[str, int] = {}
+    low_role_count = 0
+    for player in cheap_players:
+        game = str(getattr(player, "game", "") or "").strip()
+        if game:
+            game_counts[game] = game_counts.get(game, 0) + 1
+        role_stability = float(getattr(player, "role_stability", 0.0) or 0.0)
+        recent_minutes = float(getattr(player, "recent_minutes_avg", 0.0) or 0.0)
+        if role_stability > 0.0 or recent_minutes > 0.0:
+            if role_stability < 0.62 or recent_minutes < 24.0:
+                low_role_count += 1
+    penalty += sum(max(count - 1, 0) * 3.2 for count in game_counts.values())
+    penalty += max(0, len(cheap_players) - 2) * 2.1
+    penalty += max(0, low_role_count - 1) * 2.8
+    return penalty
 
 
 def _rerank_cash_lineups_robustly(
@@ -1354,6 +1449,11 @@ def _apply_cash_quality_floor(
     threshold = top_score * float(quality_floor)
     filtered = [lineup for lineup in lineups if _cash_lineup_robust_score(lineup, game_boosts=game_boosts) >= threshold]
     return filtered or lineups[:1]
+
+
+def _is_clear_availability_status(status: str) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"active", "probable", "available"}
 
 
 def _merge_focus_players(target: list[str], players: list[str]) -> None:

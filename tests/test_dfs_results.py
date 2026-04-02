@@ -47,6 +47,13 @@ def _nba_projection(
         assists=5.0,
         availability_status="active",
         availability_source="live_profile",
+        recent_games_sample=8.0,
+        recent_minutes_avg=34.0,
+        participation_rate=1.0,
+        role_stability=1.0,
+        recent_fpts_avg=median,
+        recent_fpts_weighted=median,
+        recent_form_delta=0.0,
     )
 
 
@@ -132,6 +139,7 @@ def test_save_and_score_dfs_build_round_trip(tmp_path: Path) -> None:
         game_boosts={"NYK@HOU": 1.25},
         lineups=(lineup,),
         lineup_cards=(card,),
+        projected_players=(player_a, player_b),
         lineup_families=(
             DFSLineupFamily(
                 label="Alpha Guard core",
@@ -152,6 +160,8 @@ def test_save_and_score_dfs_build_round_trip(tmp_path: Path) -> None:
     assert summary is not None
     assert summary["build"]["sport"] == "nba"
     assert summary["lineups"][0]["family_label"] == "Alpha Guard core"
+    assert len(summary["projected_players"]) == 2
+    assert summary["projected_players"][0]["player_name"] in {"Alpha Guard", "Beta Big"}
 
     inserted = upsert_normalized_player_results(
         sport="nba",

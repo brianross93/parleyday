@@ -8,6 +8,8 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from player_name_utils import dfs_name_key
+
 
 DEFAULT_DFS_RESULTS_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "dfs_results.sqlite")
 
@@ -116,6 +118,35 @@ def ensure_dfs_results_schema(db_path: str = DEFAULT_DFS_RESULTS_DB_PATH) -> Non
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dfs_projected_players (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                build_id INTEGER NOT NULL,
+                player_id TEXT NOT NULL,
+                player_name TEXT NOT NULL,
+                player_name_key TEXT NOT NULL,
+                team TEXT NOT NULL,
+                opponent TEXT NOT NULL,
+                game TEXT NOT NULL,
+                salary INTEGER NOT NULL,
+                positions_json TEXT NOT NULL,
+                roster_positions_json TEXT NOT NULL,
+                median_fpts REAL NOT NULL,
+                ceiling_fpts REAL NOT NULL,
+                floor_fpts REAL NOT NULL,
+                volatility REAL NOT NULL,
+                projection_confidence REAL NOT NULL,
+                minutes REAL NOT NULL,
+                points REAL NOT NULL,
+                rebounds REAL NOT NULL,
+                assists REAL NOT NULL,
+                availability_status TEXT NOT NULL,
+                availability_source TEXT NOT NULL,
+                FOREIGN KEY(build_id) REFERENCES dfs_builds(id) ON DELETE CASCADE
+            )
+            """
+        )
         conn.commit()
 
 
@@ -132,6 +163,7 @@ def save_dfs_build(
     created_at = _utcnow_iso()
     lineup_cards = list(payload.get("lineup_cards") or [])
     family_lookup = _family_lookup(payload.get("lineup_families") or [])
+    projected_players = list(payload.get("projected_players") or [])
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
@@ -165,6 +197,43 @@ def save_dfs_build(
             ),
         )
         build_id = int(cursor.lastrowid)
+
+        for player in projected_players:
+            player_map = _as_mapping(player)
+            conn.execute(
+                """
+                INSERT INTO dfs_projected_players (
+                    build_id, player_id, player_name, player_name_key, team, opponent, game,
+                    salary, positions_json, roster_positions_json,
+                    median_fpts, ceiling_fpts, floor_fpts, volatility, projection_confidence,
+                    minutes, points, rebounds, assists,
+                    availability_status, availability_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    build_id,
+                    str(player_map.get("player_id") or player_map.get("name") or ""),
+                    str(player_map.get("name") or ""),
+                    str(player_map.get("player_name_key") or dfs_name_key(str(player_map.get("name") or ""))),
+                    str(player_map.get("team") or ""),
+                    str(player_map.get("opponent") or ""),
+                    str(player_map.get("game") or ""),
+                    int(player_map.get("salary") or 0),
+                    _json_dumps(player_map.get("positions") or []),
+                    _json_dumps(player_map.get("roster_positions") or []),
+                    float(player_map.get("median_fpts") or 0.0),
+                    float(player_map.get("ceiling_fpts") or 0.0),
+                    float(player_map.get("floor_fpts") or 0.0),
+                    float(player_map.get("volatility") or 0.0),
+                    float(player_map.get("projection_confidence") or 0.0),
+                    float(player_map.get("minutes") or 0.0),
+                    float(player_map.get("points") or 0.0),
+                    float(player_map.get("rebounds") or 0.0),
+                    float(player_map.get("assists") or 0.0),
+                    str(player_map.get("availability_status") or ""),
+                    str(player_map.get("availability_source") or ""),
+                ),
+            )
 
         for lineup_index, card in enumerate(lineup_cards, start=1):
             card_map = _as_mapping(card)
@@ -298,9 +367,19 @@ def fetch_saved_build_summary(build_id: int, db_path: str = DEFAULT_DFS_RESULTS_
             """,
             (build_id,),
         ).fetchall()
+        projected_rows = conn.execute(
+            """
+            SELECT *
+            FROM dfs_projected_players
+            WHERE build_id = ?
+            ORDER BY median_fpts DESC, salary DESC, player_name ASC
+            """,
+            (build_id,),
+        ).fetchall()
     return {
         "build": dict(build_row),
         "lineups": [dict(row) for row in lineup_rows],
+        "projected_players": [dict(row) for row in projected_rows],
     }
 
 

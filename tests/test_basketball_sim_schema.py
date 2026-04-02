@@ -110,6 +110,8 @@ def test_schema_supports_possession_level_game_input() -> None:
     )
     assert sim_input.home_tactics.play_family_weights[PlayFamily.HIGH_PICK_AND_ROLL] == 0.4
     assert sim_input.away_tactics.coverage_weights[DefensiveCoverage.SWITCH] == 0.25
+    assert sim_input.home_tactics.star_usage_bias == 1.0
+    assert sim_input.home_tactics.shooter_distribution_weights == {}
 
 
 def test_schema_supports_possession_context_and_outcome() -> None:

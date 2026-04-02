@@ -251,6 +251,11 @@ class TeamTactics:
     off_ball_screen_rate: float
     play_family_weights: dict[PlayFamily, float]
     coverage_weights: dict[DefensiveCoverage, float]
+    star_usage_bias: float = 1.0
+    closeout_attack_rate: float = 0.5
+    second_side_rate: float = 0.25
+    corner_spacing_bias: float = 0.5
+    shooter_distribution_weights: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
