@@ -43,6 +43,57 @@ NBA_PLAYER_STATUS_RE = re.compile(
 MLB_TRANSACTIONS_URL = "https://statsapi.mlb.com/api/v1/transactions"
 
 
+def fetch_last_mlb_lineup(team_id: int, date_str: str, lookback_days: int = 14) -> list[dict[str, Any]]:
+    target_date = datetime.strptime(date_str, "%Y-%m-%d")
+    start_date = (target_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    response = requests.get(
+        MLB_SCHEDULE_URL,
+        params={
+            "sportId": 1,
+            "teamId": team_id,
+            "startDate": start_date,
+            "endDate": date_str,
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    games = []
+    for date_block in response.json().get("dates", []):
+        for game in date_block.get("games", []):
+            if game.get("status", {}).get("detailedState") != "Final":
+                continue
+            official_date = str(game.get("officialDate") or "")
+            if official_date and official_date >= date_str:
+                continue
+            games.append(game)
+    games.sort(key=lambda item: str(item.get("officialDate") or ""), reverse=True)
+    for game in games:
+        game_pk = game.get("gamePk")
+        if not game_pk:
+            continue
+        feed = requests.get(f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live", timeout=20).json()
+        teams = (feed.get("liveData", {}).get("boxscore", {}) or {}).get("teams", {})
+        away_team_id = ((feed.get("gameData", {}).get("teams", {}) or {}).get("away", {}) or {}).get("id")
+        side = "away" if away_team_id == team_id else "home"
+        players = ((teams.get(side) or {}).get("players") or {})
+        lineup = []
+        for player in players.values():
+            batting_order = str(player.get("battingOrder") or "").strip()
+            if not batting_order:
+                continue
+            lineup.append(
+                {
+                    "id": player.get("person", {}).get("id"),
+                    "fullName": player.get("person", {}).get("fullName", ""),
+                    "battingOrder": batting_order,
+                }
+            )
+        if lineup:
+            lineup.sort(key=lambda item: int(str(item.get("battingOrder") or "999")))
+            return lineup[:9]
+    return []
+
+
 def fetch_mlb_player_hand(player_id: int, hand_key: str = "pitchHand") -> str:
     response = requests.get(f"https://statsapi.mlb.com/api/v1/people/{player_id}", timeout=20)
     response.raise_for_status()
@@ -247,6 +298,16 @@ def fetch_mlb_game_contexts(date_str: str) -> list[dict[str, Any]]:
                 except Exception:
                     weather = None
             lineups = game.get("lineups") or {}
+            away_players = list(lineups.get("awayPlayers", []) or [])
+            home_players = list(lineups.get("homePlayers", []) or [])
+            away_lineup_source = "confirmed"
+            home_lineup_source = "confirmed"
+            if len(away_players) < 9 and game["teams"]["away"]["team"].get("id"):
+                away_players = fetch_last_mlb_lineup(int(game["teams"]["away"]["team"]["id"]), date_str)
+                away_lineup_source = "last_fielded" if away_players else "missing"
+            if len(home_players) < 9 and game["teams"]["home"]["team"].get("id"):
+                home_players = fetch_last_mlb_lineup(int(game["teams"]["home"]["team"]["id"]), date_str)
+                home_lineup_source = "last_fielded" if home_players else "missing"
             contexts.append(
                 {
                     "game_pk": game.get("gamePk"),
@@ -267,14 +328,18 @@ def fetch_mlb_game_contexts(date_str: str) -> list[dict[str, Any]]:
                         "home": game["teams"]["home"].get("probablePitcher", {}),
                     },
                     "lineups": {
-                        "away": [player.get("fullName") for player in lineups.get("awayPlayers", [])],
-                        "home": [player.get("fullName") for player in lineups.get("homePlayers", [])],
+                        "away": [player.get("fullName") for player in away_players],
+                        "home": [player.get("fullName") for player in home_players],
                     },
-                    "away_lineup_players": lineups.get("awayPlayers", []),
-                    "home_lineup_players": lineups.get("homePlayers", []),
+                    "away_lineup_players": away_players,
+                    "home_lineup_players": home_players,
                     "lineup_status": {
                         "away_confirmed": len(lineups.get("awayPlayers", [])) >= 9,
                         "home_confirmed": len(lineups.get("homePlayers", [])) >= 9,
+                        "away_source": away_lineup_source,
+                        "home_source": home_lineup_source,
+                        "away_available": len(away_players) >= 9,
+                        "home_available": len(home_players) >= 9,
                     },
                     "availability": {
                         "away": {},
@@ -689,6 +754,88 @@ def fetch_nba_injury_context_details(date_str: str, contexts: list[dict[str, Any
     }
 
 
+def build_nba_profile_availability_context(date_str: str, contexts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    derived: dict[str, dict[str, Any]] = {}
+    for context in contexts:
+        matchup = str(context.get("matchup") or "").strip()
+        if not matchup:
+            continue
+        side_payloads: dict[str, dict[str, Any]] = {}
+        for side, team_key in (("away", "away_team_id"), ("home", "home_team_id")):
+            team_id = context.get(team_key)
+            if not team_id:
+                side_payloads[side] = {"submitted": False, "entries": []}
+                continue
+            try:
+                profiles = fetch_nba_team_player_profiles(str(team_id), date_str)
+            except Exception:
+                profiles = []
+            side_payloads[side] = {
+                "submitted": bool(profiles),
+                "entries": _nba_profile_availability_entries(profiles),
+            }
+        derived[matchup] = {
+            "report_url": None,
+            "availability": side_payloads,
+        }
+    return derived
+
+
+def _nba_profile_availability_entries(team_profiles: list[dict[str, Any]]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for profile in team_profiles or []:
+        status = str(profile.get("status") or "").strip()
+        normalized_status = status.lower()
+        if normalized_status in {"", "active", "available"}:
+            continue
+        injuries = profile.get("injuries") or []
+        reason = ""
+        if injuries:
+            first = injuries[0] or {}
+            reason = str(first.get("detail") or first.get("type") or "").strip()
+        entries.append(
+            {
+                "player_name": str(profile.get("name") or "").strip(),
+                "status": status,
+                "reason": reason,
+            }
+        )
+    return entries
+
+
+def merge_nba_availability_sources(
+    parsed: dict[str, Any] | None,
+    profile_fallback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = {
+        "source": "pending_external_feed",
+        "report_url": None,
+        "away": [],
+        "home": [],
+        "away_submitted": False,
+        "home_submitted": False,
+    }
+    if parsed:
+        merged["source"] = "official_nba_injury_report_pdf"
+        merged["report_url"] = parsed.get("report_url")
+    if profile_fallback:
+        merged["source"] = (
+            "official_nba_injury_report_pdf+espn_team_profiles"
+            if parsed
+            else "espn_team_profiles"
+        )
+    for side in ("away", "home"):
+        parsed_side = ((parsed or {}).get("availability") or {}).get(side) or {}
+        fallback_side = ((profile_fallback or {}).get("availability") or {}).get(side) or {}
+        if bool(parsed_side.get("submitted")):
+            merged[side] = list(parsed_side.get("entries") or [])
+            merged[f"{side}_submitted"] = True
+        elif bool(fallback_side.get("submitted")):
+            merged[side] = list(fallback_side.get("entries") or [])
+            merged[f"{side}_submitted"] = True
+    return merged
+
+
 def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) -> dict:
     store = SnapshotStore(db_path)
     sports = ["mlb", "nba"] if sport == "both" else [sport]
@@ -752,6 +899,7 @@ def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) ->
             )
             nba_contexts = fetch_nba_game_contexts(date_str)
             injury_context = {}
+            profile_availability_context = {}
             injury_status = {
                 "status": "missing",
                 "message": "NBA injury refresh did not run.",
@@ -776,17 +924,16 @@ def refresh_slate(date_str: str, sport: str, db_path: str, kalshi_pages: int) ->
                     "submitted_teams": 0,
                     "expected_teams": len(nba_contexts) * 2,
                 }
+            try:
+                profile_availability_context = build_nba_profile_availability_context(date_str, nba_contexts)
+            except Exception:
+                profile_availability_context = {}
             for context in nba_contexts:
                 parsed = injury_context.get(context["matchup"])
-                if parsed is not None:
-                    context["availability"] = {
-                        "source": "official_nba_injury_report_pdf",
-                        "report_url": parsed["report_url"],
-                        "away": parsed["availability"].get("away", {}).get("entries", []),
-                        "home": parsed["availability"].get("home", {}).get("entries", []),
-                        "away_submitted": parsed["availability"].get("away", {}).get("submitted", False),
-                        "home_submitted": parsed["availability"].get("home", {}).get("submitted", False),
-                    }
+                profile_fallback = profile_availability_context.get(context["matchup"])
+                merged_availability = merge_nba_availability_sources(parsed, profile_fallback)
+                if merged_availability.get("source") != "pending_external_feed":
+                    context["availability"] = merged_availability
                 context_count += 1
                 store.upsert_snapshot(
                     source="nba_refresh",

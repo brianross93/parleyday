@@ -28,7 +28,7 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
             completed_events.append(event["id"])
     completed_events = completed_events[-last_n_games:]
 
-    accum: dict[str, dict[str, float]] = {}
+    accum: dict[str, dict[str, Any]] = {}
     for event_id in completed_events:
         summary_response = requests.get(ESPN_NBA_SUMMARY_URL, params={"event": event_id}, timeout=20)
         summary_response.raise_for_status()
@@ -50,18 +50,48 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
                         continue
                     entry = accum.setdefault(
                         athlete_id,
-                        {"games": 0.0, "minutes": 0.0, "points": 0.0, "rebounds": 0.0, "assists": 0.0},
+                        {
+                            "games": 0.0,
+                            "minutes": 0.0,
+                            "points": 0.0,
+                            "rebounds": 0.0,
+                            "assists": 0.0,
+                            "fantasy_scores": [],
+                        },
                     )
+                    minutes = _parse_minutes(stats[label_idx["MIN"]]) if "MIN" in label_idx else 0.0
+                    points = _parse_float(stats[label_idx["PTS"]]) if "PTS" in label_idx else 0.0
+                    rebounds = _parse_float(stats[label_idx["REB"]]) if "REB" in label_idx else 0.0
+                    assists = _parse_float(stats[label_idx["AST"]]) if "AST" in label_idx else 0.0
                     entry["games"] += 1.0
-                    entry["minutes"] += _parse_minutes(stats[label_idx["MIN"]]) if "MIN" in label_idx else 0.0
-                    entry["points"] += _parse_float(stats[label_idx["PTS"]]) if "PTS" in label_idx else 0.0
-                    entry["rebounds"] += _parse_float(stats[label_idx["REB"]]) if "REB" in label_idx else 0.0
-                    entry["assists"] += _parse_float(stats[label_idx["AST"]]) if "AST" in label_idx else 0.0
+                    entry["minutes"] += minutes
+                    entry["points"] += points
+                    entry["rebounds"] += rebounds
+                    entry["assists"] += assists
+                    entry["fantasy_scores"].append(_draftkings_nba_box_score_fpts(points, rebounds, assists))
 
     profiles = []
     for athlete_id, athlete in roster_lookup.items():
-        statline = accum.get(athlete_id, {"games": 0.0, "minutes": 0.0, "points": 0.0, "rebounds": 0.0, "assists": 0.0})
+        statline = accum.get(
+            athlete_id,
+            {
+                "games": 0.0,
+                "minutes": 0.0,
+                "points": 0.0,
+                "rebounds": 0.0,
+                "assists": 0.0,
+                "fantasy_scores": [],
+            },
+        )
         games = max(statline["games"], 1.0)
+        fantasy_scores = [float(score) for score in statline.get("fantasy_scores", [])]
+        recent_fpts_avg = sum(fantasy_scores) / len(fantasy_scores) if fantasy_scores else 0.0
+        if fantasy_scores:
+            weights = list(range(1, len(fantasy_scores) + 1))
+            weighted_total = sum(score * weight for score, weight in zip(fantasy_scores, weights))
+            recent_fpts_weighted = weighted_total / float(sum(weights))
+        else:
+            recent_fpts_weighted = 0.0
         injuries = athlete.get("injuries", []) or []
         profiles.append(
             {
@@ -82,6 +112,9 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
                 "points": statline["points"] / games,
                 "rebounds": statline["rebounds"] / games,
                 "assists": statline["assists"] / games,
+                "recent_fpts_avg": recent_fpts_avg,
+                "recent_fpts_weighted": recent_fpts_weighted,
+                "recent_form_delta": recent_fpts_weighted - recent_fpts_avg,
             }
         )
     return profiles
@@ -99,3 +132,7 @@ def _parse_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _draftkings_nba_box_score_fpts(points: float, rebounds: float, assists: float) -> float:
+    return float(points + (rebounds * 1.25) + (assists * 1.5))

@@ -8,6 +8,7 @@ from quantum_parlay_oracle import (
     direct_activation_and_coactivation,
     fetch_live_nba_team_form,
     leg_moneyline_side,
+    market_parlay_payout_estimate,
     nba_team_form_is_usable,
     nba_stat_dispersion,
     nba_roster_offense_penalty,
@@ -372,6 +373,39 @@ class SimModelingHelperTests(unittest.TestCase):
         self.assertEqual(result["meta"]["entropy_source"], "No recognized legs")
         self.assertEqual(result["top_legs"], [])
 
+    def test_run_oracle_props_only_filters_out_moneylines_and_totals(self) -> None:
+        legs = [
+            Leg(0, "Detroit ML", "ml", "DET@OKC", 0.48, "notes", "nba"),
+            Leg(1, "DET@OKC O229.5", "total", "DET@OKC", 0.51, "notes", "nba"),
+            Leg(2, "Shai Gilgeous-Alexander O 30 PTS", "prop", "DET@OKC", 0.54, "notes", "nba"),
+        ]
+        loader_meta = {"games": 1, "recognized_legs": 3}
+
+        with (
+            patch("quantum_parlay_oracle.load_legs", return_value=(legs, "cached", loader_meta)),
+            patch(
+                "quantum_parlay_oracle.direct_activation_and_coactivation",
+                return_value=(
+                    np.array([0.61], dtype=np.float64),
+                    np.array([[0.61]], dtype=np.float64),
+                    {0: {"pricing_source": "market", "pricing_label": "Market implied"}},
+                ),
+            ),
+        ):
+            result = run_oracle(
+                date_str="2026-03-29",
+                sport="nba",
+                slate_mode="auto",
+                score_source="implied",
+                props_only=True,
+            )
+
+        self.assertEqual(result["config"]["props_only"], True)
+        self.assertEqual(result["meta"]["leg_filter"], "props_only")
+        self.assertEqual(result["meta"]["recognized_legs_raw"], 3)
+        self.assertEqual(result["meta"]["recognized_legs"], 1)
+        self.assertEqual(result["top_legs"][0]["label"], "Shai Gilgeous-Alexander O 30 PTS")
+
     def test_live_mlb_sim_falls_back_when_lineups_are_missing(self) -> None:
         with patch(
             "quantum_parlay_oracle.load_matchup_profile_snapshot",
@@ -447,14 +481,13 @@ class SimModelingHelperTests(unittest.TestCase):
             pricing_details=pricing_details,
         )
 
-        self.assertEqual([tier["key"] for tier in tiers], ["best", "safe", "upside"])
-        best = next(tier for tier in tiers if tier["key"] == "best")
-        self.assertTrue(best["legs"])
-        self.assertGreater(best["payout_estimate"], 1.0)
-        self.assertGreater(best["model_joint_prob"], 0.0)
-        self.assertGreaterEqual(best["average_edge"], 0.0)
+        self.assertEqual([tier["key"] for tier in tiers], ["p25", "p50", "p100"])
+        p25 = next(tier for tier in tiers if tier["key"] == "p25")
+        self.assertTrue(p25["legs"])
+        self.assertGreater(p25["payout_estimate"], 1.0)
+        self.assertGreater(p25["model_joint_prob"], 0.0)
 
-    def test_recommended_parlays_avoid_same_game_stacks_in_best_profile(self) -> None:
+    def test_recommended_parlays_still_avoid_logically_incompatible_pairs(self) -> None:
         legs = [
             Leg(0, "AAA ML", "ml", "AAA@BBB", 0.72, "notes", "mlb"),
             Leg(1, "AAA@BBB O5.5", "total", "AAA@BBB", 0.72, "notes", "mlb"),
@@ -474,11 +507,11 @@ class SimModelingHelperTests(unittest.TestCase):
             co_activation=co_activation,
             pricing_details=pricing_details,
         )
-        best = next(tier for tier in tiers if tier["key"] == "best")
-        games = [leg["game"] for leg in best["legs"]]
-        self.assertEqual(len(games), len(set(games)))
+        p25 = next(tier for tier in tiers if tier["key"] == "p25")
+        labels = {leg["label"] for leg in p25["legs"]}
+        self.assertFalse({"AAA ML", "BBB ML"} <= labels)
 
-    def test_upside_recommendation_can_keep_high_payout_parlay(self) -> None:
+    def test_high_probability_100x_profile_can_keep_high_payout_parlay(self) -> None:
         legs = [
             Leg(0, "A ML", "ml", "A@B", 0.30, "notes", "mlb"),
             Leg(1, "C ML", "ml", "C@D", 0.29, "notes", "mlb"),
@@ -501,10 +534,20 @@ class SimModelingHelperTests(unittest.TestCase):
             pricing_details=pricing_details,
         )
 
-        upside = next(tier for tier in tiers if tier["key"] == "upside")
-        self.assertTrue(upside["legs"])
-        self.assertGreater(upside["payout_estimate"], 100.0)
-        self.assertGreater(upside["model_joint_prob"], upside["market_joint_prob"])
+        p100 = next(tier for tier in tiers if tier["key"] == "p100")
+        self.assertTrue(p100["legs"])
+        self.assertGreater(p100["payout_estimate"], 100.0)
+        self.assertGreater(p100["model_joint_prob"], 0.0)
+
+    def test_market_parlay_payout_estimate_uses_entry_price_not_implied_prob(self) -> None:
+        legs = [
+            Leg(0, "TB@MIL O5.5", "total", "TB@MIL", 0.50, "notes", "mlb", entry_price=0.74),
+            Leg(1, "DET ML", "ml", "DET@OKC", 0.30, "notes", "nba", entry_price=0.32),
+        ]
+
+        payout = market_parlay_payout_estimate([0, 1], legs)
+
+        self.assertAlmostEqual(payout, 1.0 / (0.74 * 0.32), places=6)
 
 
 if __name__ == "__main__":

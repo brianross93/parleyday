@@ -246,14 +246,35 @@ def build_pitcher_profile_payload(player_id: int, name: str, season: int) -> dic
 def team_context_from_cached_payload(
     team_code: str,
     lineup_payload: list[dict],
-    pitcher_payload: dict,
+    pitcher_payload: dict | None,
     bullpen_payload: list[dict] | None = None,
 ) -> TeamContext:
     lineup = tuple(BatterProfile(**{key: item[key] for key in BATTER_PROFILE_FIELDS if key in item}) for item in lineup_payload)
-    starter = PitcherProfile(**{key: pitcher_payload[key] for key in PITCHER_PROFILE_FIELDS})
+    starter_payload = _normalize_pitcher_payload(team_code, pitcher_payload)
+    starter = PitcherProfile(**{key: starter_payload[key] for key in PITCHER_PROFILE_FIELDS})
     bullpen = tuple(
         PitcherProfile(**{key: item[key] for key in PITCHER_PROFILE_FIELDS})
         for item in (bullpen_payload or [])
         if PITCHER_PROFILE_FIELDS.issubset(item.keys())
     )
     return TeamContext(team_code=team_code, lineup=lineup, starter=starter, bullpen=bullpen)
+
+
+def _normalize_pitcher_payload(team_code: str, pitcher_payload: dict | None) -> dict[str, Any]:
+    payload = dict(pitcher_payload or {})
+    if payload and PITCHER_PROFILE_FIELDS.issubset(payload.keys()):
+        return payload
+    normalized = {key: payload.get(key) for key in PITCHER_PROFILE_FIELDS}
+    normalized["player_id"] = str(normalized.get("player_id") or f"{team_code}-sp-fallback")
+    normalized["name"] = str(normalized.get("name") or f"{team_code} Starter")
+    normalized["hand"] = str(normalized.get("hand") or "R")
+    normalized["strikeout_rate"] = float(normalized.get("strikeout_rate") or LEAGUE_PITCHING_PRIORS["strikeout_rate"])
+    normalized["walk_rate"] = float(normalized.get("walk_rate") or LEAGUE_PITCHING_PRIORS["walk_rate"])
+    normalized["hbp_rate"] = float(normalized.get("hbp_rate") or LEAGUE_PITCHING_PRIORS["hbp_rate"])
+    normalized["single_rate"] = float(normalized.get("single_rate") or LEAGUE_PITCHING_PRIORS["single_rate"])
+    normalized["double_rate"] = float(normalized.get("double_rate") or LEAGUE_PITCHING_PRIORS["double_rate"])
+    normalized["triple_rate"] = float(normalized.get("triple_rate") or LEAGUE_PITCHING_PRIORS["triple_rate"])
+    normalized["home_run_rate"] = float(normalized.get("home_run_rate") or LEAGUE_PITCHING_PRIORS["home_run_rate"])
+    normalized["fatigue_start"] = int(normalized.get("fatigue_start") or 75)
+    normalized["fatigue_full"] = int(normalized.get("fatigue_full") or 100)
+    return normalized

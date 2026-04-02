@@ -54,6 +54,10 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     NBAPlayerProfile = None
     NBATeamContext = None
 
+from candidate_builder import build_thesis_candidates
+from player_name_utils import canonicalize_player_name as shared_canonicalize_player_name
+from thesis_engine import build_structured_theses
+
 
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
@@ -79,6 +83,17 @@ NBA_SIDE_CONFIDENCE_FACTOR = 1.03
 SIMULATION_RUNS = 4000
 DEFAULT_BASELINE_CACHE_MAX_AGE_HOURS = 36.0
 DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS = 6.0
+
+def _volatile_cache_age_for_slate(date_str: str) -> float | None:
+    try:
+        slate_date = datetime.fromisoformat(str(date_str)).date()
+    except ValueError:
+        return DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS
+    today_utc = datetime.now(timezone.utc).date()
+    if slate_date >= today_utc:
+        return None
+    return DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS
+
 
 TEAM_CODES = {
     "Arizona Diamondbacks": ["AZ", "ARI"],
@@ -375,6 +390,7 @@ class Leg:
     implied_prob: float
     notes: str = ""
     sport: str = "mlb"
+    entry_price: float | None = None
 
 
 STATIC_LEGS = [
@@ -428,8 +444,8 @@ def compact_token(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", value.upper())
 
 
-def parse_market_price(market: dict) -> float | None:
-    for key in ("yes_bid_dollars", "yes_ask_dollars", "last_price_dollars"):
+def _parse_price_field(market: dict, *keys: str) -> float | None:
+    for key in keys:
         raw = market.get(key)
         if raw in (None, "", "0.0000", "0", 0):
             continue
@@ -442,9 +458,20 @@ def parse_market_price(market: dict) -> float | None:
     return None
 
 
+def parse_market_price(market: dict) -> float | None:
+    last_price = _parse_price_field(market, "last_price_dollars")
+    midpoint = market_midpoint(market)
+    ask_price = _parse_price_field(market, "yes_ask_dollars")
+    bid_price = _parse_price_field(market, "yes_bid_dollars")
+    for value in (last_price, midpoint, ask_price, bid_price):
+        if value is not None:
+            return value
+    return None
+
+
 def market_midpoint(market: dict) -> float | None:
     values = []
-    for key in ("yes_bid_dollars", "yes_ask_dollars", "last_price_dollars"):
+    for key in ("yes_bid_dollars", "yes_ask_dollars"):
         raw = market.get(key)
         if raw in (None, "", "0.0000", "0", 0):
             continue
@@ -457,6 +484,17 @@ def market_midpoint(market: dict) -> float | None:
     if not values:
         return None
     return sum(values) / len(values)
+
+
+def executable_market_price(market: dict) -> float | None:
+    ask_price = _parse_price_field(market, "yes_ask_dollars")
+    last_price = _parse_price_field(market, "last_price_dollars")
+    midpoint = market_midpoint(market)
+    bid_price = _parse_price_field(market, "yes_bid_dollars")
+    for value in (ask_price, last_price, midpoint, bid_price):
+        if value is not None:
+            return value
+    return None
 
 
 def structured_threshold_label(
@@ -1024,6 +1062,7 @@ def load_team_form_snapshot(date_str: str, sport: str) -> dict[str, dict]:
 
 
 def load_game_context_snapshot(date_str: str, sport: str, matchup: str) -> dict | None:
+    max_age_hours = _volatile_cache_age_for_slate(date_str)
     if sport == "mlb":
         return load_cached_payload(
             source="mlb_refresh",
@@ -1031,7 +1070,7 @@ def load_game_context_snapshot(date_str: str, sport: str, matchup: str) -> dict 
             entity_type="game_context",
             entity_key=matchup,
             as_of_date=date_str,
-            max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+            max_age_hours=max_age_hours,
         )
     if sport == "nba":
         return load_cached_payload(
@@ -1040,30 +1079,32 @@ def load_game_context_snapshot(date_str: str, sport: str, matchup: str) -> dict 
             entity_type="game_context",
             entity_key=matchup,
             as_of_date=date_str,
-            max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+            max_age_hours=max_age_hours,
         )
     return None
 
 
 def load_matchup_profile_snapshot(date_str: str, matchup: str) -> dict | None:
+    max_age_hours = _volatile_cache_age_for_slate(date_str)
     return load_cached_payload(
         source="mlb_refresh",
         sport="mlb",
         entity_type="matchup_profile",
         entity_key=matchup,
         as_of_date=date_str,
-        max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+        max_age_hours=max_age_hours,
     )
 
 
 def load_nba_matchup_profile_snapshot(date_str: str, matchup: str) -> dict | None:
+    max_age_hours = _volatile_cache_age_for_slate(date_str)
     return load_cached_payload(
         source="nba_refresh",
         sport="nba",
         entity_type="matchup_profile",
         entity_key=matchup,
         as_of_date=date_str,
-        max_age_hours=DEFAULT_VOLATILE_CACHE_MAX_AGE_HOURS,
+        max_age_hours=max_age_hours,
     )
 
 
@@ -1167,10 +1208,6 @@ def expected_mlb_runs(
         if wind_speed_mph is not None and wind_speed_mph >= 12:
             away_mean += 0.12
             home_mean += 0.12
-        lineup_status = game_context.get("lineup_status") or {}
-        if not (lineup_status.get("away_confirmed") and lineup_status.get("home_confirmed")):
-            away_mean = (away_mean * 0.75) + (LEAGUE_AVG_RUNS * 0.25)
-            home_mean = (home_mean * 0.75) + (LEAGUE_AVG_RUNS * 0.25)
         availability = game_context.get("availability") or {}
         bullpen = game_context.get("bullpen") or {}
         away_unavailable = availability.get("away", {}).get("unavailable_players", [])
@@ -1228,15 +1265,7 @@ def nba_availability_penalty(entries: list[dict]) -> float:
 
 
 def canonicalize_player_name(name: str) -> str:
-    text = re.sub(r"\s+", " ", str(name or "").strip())
-    if not text:
-        return ""
-    if "," in text:
-        last, first = [part.strip() for part in text.split(",", 1)]
-        if first and last:
-            text = f"{first} {last}"
-    text = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
-    return re.sub(r"\s+", " ", text).strip()
+    return shared_canonicalize_player_name(name)
 
 
 def nba_availability_status_lookup(entries: list[dict] | None) -> dict[str, str]:
@@ -1464,6 +1493,7 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
     implied_prob = parse_market_price(market)
     if implied_prob is None:
         return None
+    entry_price = executable_market_price(market)
 
     title = market.get("title", "")
     yes_subtitle = market.get("yes_sub_title") or ""
@@ -1473,7 +1503,7 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
 
     if "winner?" in title_lower or event_ticker.endswith("GAME") or "game winner" in title_lower:
         team = clean_market_team_label(yes_subtitle or title.replace(" Winner?", ""))
-        return Leg(-1, f"{team} ML", "ml", game.matchup, implied_prob, note, game.sport)
+        return Leg(-1, f"{team} ML", "ml", game.matchup, implied_prob, note, game.sport, entry_price)
 
     if game.sport == "mlb":
         if event_ticker.startswith("KXMLBHR-") or "home runs?" in title_lower:
@@ -1481,30 +1511,30 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
                 return None
             label = structured_threshold_label(market, "HR", "home runs")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
             player = title.split(":", 1)[0].strip()
-            return Leg(-1, f"{player} O 1 HR", "prop", game.matchup, implied_prob, note, game.sport)
+            return Leg(-1, f"{player} O 1 HR", "prop", game.matchup, implied_prob, note, game.sport, entry_price)
 
         if event_ticker.startswith("KXMLBHIT-") or " hits?" in title_lower:
             label = structured_threshold_label(market, "H", "hits")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
 
         if "strikeout" in title_lower or "strikeouts" in title_lower or event_ticker.startswith("KXMLBSO"):
             label = structured_threshold_label(market, "K", "strikeouts")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
             player = title.split(":")[0].strip()
-            return Leg(-1, f"{player} O 1 K", "prop", game.matchup, implied_prob, note, game.sport)
+            return Leg(-1, f"{player} O 1 K", "prop", game.matchup, implied_prob, note, game.sport, entry_price)
 
         if event_ticker.startswith("KXMLBTOTAL") or "total runs?" in title_lower:
             strike = market.get("floor_strike")
             if strike is None:
                 raw = yes_subtitle or title
                 cleaned = raw.replace("Over", "O").replace("over", "O").strip()
-                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport, entry_price)
                 return leg if total_leg_in_bounds(leg) else None
-            leg = Leg(-1, f"{game.matchup} O{strike + 0.0:g}", "total", game.matchup, implied_prob, note, game.sport)
+            leg = Leg(-1, f"{game.matchup} O{strike + 0.0:g}", "total", game.matchup, implied_prob, note, game.sport, entry_price)
             return leg if total_leg_in_bounds(leg) else None
 
         if event_ticker.startswith("KXMLBSPREAD") or "wins by over" in title_lower:
@@ -1514,24 +1544,24 @@ def classify_market(market: dict, game: GameInfo) -> Leg | None:
         if event_ticker.startswith("KXNBAPTS") or " points?" in title_lower:
             label = structured_threshold_label(market, "PTS", "Points")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
         if event_ticker.startswith("KXNBAREB") or " rebounds?" in title_lower:
             label = structured_threshold_label(market, "REB", "Rebounds")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
         if event_ticker.startswith("KXNBAAST") or " assists?" in title_lower:
             label = structured_threshold_label(market, "AST", "Assists")
             if label:
-                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport)
+                return Leg(-1, label, "prop", game.matchup, implied_prob, note, game.sport, entry_price)
         if "total points?" in title_lower or event_ticker.startswith("KXNBATOTAL") or event_ticker.startswith("KXNBAOU"):
             raw = yes_subtitle or title
             if "over" in raw.lower():
                 cleaned = raw.replace("Over", "O").replace("over", "O").strip()
-                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport, entry_price)
                 return leg if total_leg_in_bounds(leg) else None
             if "under" in raw.lower():
                 cleaned = raw.replace("Under", "U").replace("under", "U").strip()
-                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport)
+                leg = Leg(-1, f"{game.matchup} {cleaned}", "total", game.matchup, implied_prob, note, game.sport, entry_price)
                 return leg if total_leg_in_bounds(leg) else None
 
     return None
@@ -1863,8 +1893,13 @@ def leg_trust_score(
 def market_parlay_payout_estimate(parlay: list[int], legs: list[Leg]) -> float | None:
     if not parlay:
         return None
-    market_prob = float(np.prod([float(legs[idx].implied_prob) for idx in parlay]))
-    return (1.0 / market_prob) if market_prob > 0 else None
+    entry_cost = 1.0
+    for idx in parlay:
+        price = legs[idx].entry_price if legs[idx].entry_price is not None else float(legs[idx].implied_prob)
+        if price <= 0:
+            return None
+        entry_cost *= float(price)
+    return (1.0 / entry_cost) if entry_cost > 0 else None
 
 
 def serialize_leg_summary(
@@ -1882,6 +1917,7 @@ def serialize_leg_summary(
         "game": leg.game,
         "activation": float(activation_value),
         "implied_prob": float(leg.implied_prob),
+        "entry_price": float(leg.entry_price) if leg.entry_price is not None else float(leg.implied_prob),
         "score_delta": float(activation_value) - float(leg.implied_prob),
         "trust_score": leg_trust_score(leg, float(activation_value), pricing_meta),
         "pricing_source": pricing_meta.get("pricing_source", "market"),
@@ -2223,22 +2259,25 @@ def build_greedy_parlay(
 
 RECOMMENDATION_PROFILES = [
     {
-        "key": "best",
-        "label": "Best Overall",
-        "description": "Highest composite score across edge, trust, fit, and expected value.",
+        "key": "p25",
+        "label": "Highest Probability 25x+",
+        "description": "Among tickets with real upside, this has the highest believable hit rate.",
         "bankroll_hint": "Primary",
+        "preferred_min_payout": 25.0,
     },
     {
-        "key": "safe",
-        "label": "Most Likely",
-        "description": "Highest hit-rate recommendation among the available positive constructions.",
-        "bankroll_hint": "Conservative",
+        "key": "p50",
+        "label": "Highest Probability 50x+",
+        "description": "Best chance to land among tickets that still clear a strong longshot payout bar.",
+        "bankroll_hint": "Swing",
+        "preferred_min_payout": 50.0,
     },
     {
-        "key": "upside",
-        "label": "Best Upside",
-        "description": "Best edge-adjusted payout without a hard odds cap.",
-        "bankroll_hint": "Aggressive",
+        "key": "p100",
+        "label": "Highest Probability 100x+",
+        "description": "VC-style moonshot with the best modeled path to a triple-digit return.",
+        "bankroll_hint": "Venture",
+        "preferred_min_payout": 100.0,
     },
 ]
 
@@ -2958,17 +2997,7 @@ def recommendation_leg_allowed(
     trust: float,
     requested_size: int,
 ) -> bool:
-    if trust < 0.33:
-        return False
-    if requested_size >= 4 and activation_value < 0.34:
-        return False
-    if requested_size >= 5 and activation_value < 0.28:
-        return False
-    if leg.category == "prop":
-        if is_hr_prop(leg):
-            return activation_value >= (0.34 if requested_size >= 4 else 0.40)
-        return activation_value >= (0.40 if requested_size >= 4 else 0.46)
-    return True
+    return activation_value > 0.0
 
 
 def build_tiered_parlays(
@@ -2989,21 +3018,21 @@ def build_tiered_parlays(
             activation_value = float(activation[idx])
             trust = leg_trust_score(leg, activation_value, pricing_details.get(idx))
             edge = activation_value - float(leg.implied_prob)
-            if edge < -0.02:
-                continue
             if not recommendation_leg_allowed(leg, activation_value, trust, requested_size):
                 continue
             leg_candidates.append(
                 (
                     idx,
-                    (edge * 4.5) + (trust * 1.6) + standalone_leg_score(leg, activation_value),
+                    (activation_value * 4.0)
+                    + (trust * 1.8)
+                    + (edge * 1.2)
+                    + standalone_leg_score(leg, activation_value),
                 )
             )
         ranked_candidates = [idx for idx, _ in sorted(leg_candidates, key=lambda item: item[1], reverse=True)]
-        ranked_candidates = ranked_candidates[: max(10, min(candidate_pool_limit(requested_size), 16))]
+        ranked_candidates = ranked_candidates[: max(18, min(candidate_pool_limit(requested_size) * 2, 32))]
         if len(ranked_candidates) < requested_size:
             continue
-        max_same_game_legs = 1 if requested_size <= 3 else 2
         for parlay in combinations(ranked_candidates, requested_size):
             parlay_list = list(parlay)
             if any(incompatible_pair(legs[a], legs[b]) for a, b in combinations(parlay_list, 2)):
@@ -3011,8 +3040,6 @@ def build_tiered_parlays(
             game_counts: dict[str, int] = {}
             for idx in parlay_list:
                 game_counts[legs[idx].game] = game_counts.get(legs[idx].game, 0) + 1
-            if max(game_counts.values(), default=0) > max_same_game_legs:
-                continue
             payout_estimate = market_parlay_payout_estimate(parlay_list, legs)
             if payout_estimate is None:
                 continue
@@ -3032,9 +3059,6 @@ def build_tiered_parlays(
                 np.mean([float(activation[idx]) - float(legs[idx].implied_prob) for idx in parlay_list])
             )
             edge_gap = model_prob - market_prob
-            if edge_gap < -0.01:
-                continue
-            same_game_penalty = sum(max(0, count - 1) * 0.85 for count in game_counts.values())
             payout_log = float(np.log(max(payout_estimate, 1.01)))
             base_score = (
                 partial_state_score(
@@ -3045,11 +3069,11 @@ def build_tiered_parlays(
                     available_sports=available_sports,
                     target_size=requested_size,
                 )
-                + (avg_edge * 10.0)
-                + (edge_gap * 10.0)
-                + (avg_trust * 1.5)
-                + (payout_log * 0.45)
-                - same_game_penalty
+                + (model_prob * 12.0)
+                + (avg_trust * 2.0)
+                + (edge_gap * 2.0)
+                + (avg_edge * 1.5)
+                + (payout_log * 0.25)
             )
             combos.append(
                 {
@@ -3095,14 +3119,63 @@ def build_tiered_parlays(
             avg_trust = float(combo["average_trust"])
             edge_gap = float(combo["edge_gap"])
             base = float(combo["base_score"])
-            if profile["key"] == "safe":
-                return base + (model_prob * 14.0) + (avg_trust * 2.5) - (max(0.0, payout_estimate - 8.0) * 0.10) - ((size - 2) * 0.22)
-            if profile["key"] == "upside":
-                return base + (edge_gap * 12.0) + (avg_edge * 8.0) + (np.log(max(payout_estimate, 1.01)) * 1.25) - (model_prob * 1.5)
-            return base + (edge_gap * 8.0) + (avg_edge * 6.0) + (model_prob * 4.0) - (abs(size - 3) * 0.18)
+            payout_log = float(np.log(max(payout_estimate, 1.01)))
+            target = float(profile.get("preferred_min_payout", 1.0))
+            payout_shortfall = max(0.0, target - payout_estimate)
+            payout_overshoot = max(0.0, payout_estimate - (target * 4.0))
+            thin_prob_penalty = max(0.0, 0.01 - model_prob) * 18.0
+            if profile["key"] == "p100":
+                return (
+                    base
+                    + (model_prob * 22.0)
+                    + (avg_trust * 2.2)
+                    + (edge_gap * 2.5)
+                    + (avg_edge * 1.0)
+                    + (payout_log * 0.35)
+                    - (payout_shortfall * 0.30)
+                    - (payout_overshoot * 0.015)
+                    - thin_prob_penalty
+                    - (abs(size - 5) * 0.08)
+                )
+            if profile["key"] == "p50":
+                return (
+                    base
+                    + (model_prob * 26.0)
+                    + (avg_trust * 2.5)
+                    + (edge_gap * 2.0)
+                    + (avg_edge * 1.0)
+                    + (payout_log * 0.30)
+                    - (payout_shortfall * 0.34)
+                    - (payout_overshoot * 0.02)
+                    - thin_prob_penalty
+                    - (abs(size - 4) * 0.10)
+                )
+            return (
+                base
+                + (model_prob * 30.0)
+                + (avg_trust * 2.8)
+                + (edge_gap * 1.8)
+                + (avg_edge * 0.8)
+                + (payout_log * 0.22)
+                - (payout_shortfall * 0.38)
+                - (payout_overshoot * 0.025)
+                - thin_prob_penalty
+                - (abs(size - 3) * 0.12)
+            )
 
         ranked = sorted(combos, key=profile_score, reverse=True)
-        choice = next((combo for combo in ranked if tuple(combo["parlay"]) not in used_sets), None)
+        preferred_min_payout = float(profile.get("preferred_min_payout", 1.0))
+        choice = next(
+            (
+                combo
+                for combo in ranked
+                if tuple(combo["parlay"]) not in used_sets
+                and float(combo["payout_estimate"]) >= preferred_min_payout
+            ),
+            None,
+        )
+        if choice is None:
+            choice = next((combo for combo in ranked if tuple(combo["parlay"]) not in used_sets), None)
         if choice is None:
             choice = ranked[0]
         used_sets.add(tuple(choice["parlay"]))
@@ -3142,6 +3215,7 @@ def summarize_from_scores(
     cash_co_activation: np.ndarray | None = None,
 ) -> dict:
     pricing_details = pricing_details or {}
+    date_str = str(loader_meta.get("date") or "")
     if not legs:
         return {
             "meta": {
@@ -3157,6 +3231,8 @@ def summarize_from_scores(
             "tier_parlays": [],
             "moonshot": None,
             "fades": [],
+            "theses": [],
+            "thesis_candidates": [],
         }
     n_samples = int(loader_meta.get("games", 0))
     ranked = sorted(
@@ -3210,14 +3286,7 @@ def summarize_from_scores(
             }
         )
 
-    tier_parlays = build_tiered_parlays(
-        legs,
-        activation,
-        co_activation,
-        pricing_details=pricing_details,
-        cash_activation=cash_activation,
-        cash_co_activation=cash_co_activation,
-    )
+    tier_parlays = []
 
     hr_candidates = [idx for idx in ranked if is_hr_prop(legs[idx])]
     moonshot = None
@@ -3239,6 +3308,23 @@ def summarize_from_scores(
             )
         )
 
+    theses = build_structured_theses(
+        date_str=date_str,
+        legs=legs,
+        activation=activation,
+        pricing_details=pricing_details,
+        load_game_context=load_game_context_snapshot,
+        load_matchup_profile=load_matchup_profile_snapshot,
+        load_nba_matchup_profile=load_nba_matchup_profile_snapshot,
+    )
+    thesis_candidates = build_thesis_candidates(
+        theses=theses,
+        legs=legs,
+        activation=activation,
+        co_activation=co_activation,
+        pricing_details=pricing_details,
+    )
+
     return {
         "meta": {
             "entropy_source": entropy_source.source,
@@ -3253,6 +3339,8 @@ def summarize_from_scores(
         "tier_parlays": tier_parlays,
         "moonshot": moonshot,
         "fades": fades,
+        "theses": theses,
+        "thesis_candidates": thesis_candidates,
     }
 
 
@@ -3264,6 +3352,7 @@ def summarize_results(
     loader_meta: dict,
 ) -> dict:
     n_samples = samples.shape[0]
+    date_str = str(loader_meta.get("date") or "")
     if n_samples == 0:
         return {
             "summary": {
@@ -3283,6 +3372,8 @@ def summarize_results(
             "tier_parlays": [],
             "moonshot": None,
             "fades": [],
+            "theses": [],
+            "thesis_candidates": [],
         }
     binary = (samples + 1.0) / 2.0
     activation = np.mean(binary, axis=0)
@@ -3324,7 +3415,7 @@ def summarize_results(
             }
         )
 
-    tier_parlays = build_tiered_parlays(legs, activation, co_activation)
+    tier_parlays = []
 
     hr_candidates = [idx for idx in ranked if is_hr_prop(legs[idx])]
     moonshot = None
@@ -3344,6 +3435,23 @@ def summarize_results(
             )
         )
 
+    theses = build_structured_theses(
+        date_str=date_str,
+        legs=legs,
+        activation=activation,
+        pricing_details=None,
+        load_game_context=load_game_context_snapshot,
+        load_matchup_profile=load_matchup_profile_snapshot,
+        load_nba_matchup_profile=load_nba_matchup_profile_snapshot,
+    )
+    thesis_candidates = build_thesis_candidates(
+        theses=theses,
+        legs=legs,
+        activation=activation,
+        co_activation=co_activation,
+        pricing_details=None,
+    )
+
     return {
         "meta": {
             "entropy_source": qrng.source,
@@ -3357,6 +3465,8 @@ def summarize_results(
         "tier_parlays": tier_parlays,
         "moonshot": moonshot,
         "fades": fades,
+        "theses": theses,
+        "thesis_candidates": thesis_candidates,
     }
 
 
@@ -3425,6 +3535,7 @@ def run_oracle(
     sport: str = "mlb",
     slate_mode: str = "auto",
     score_source: str = "implied",
+    props_only: bool = False,
     kalshi_pages: int = 25,
     fallback: bool = False,
     n_bytes: int = 65536,
@@ -3439,6 +3550,16 @@ def run_oracle(
         sports=sports,
         kalshi_pages=kalshi_pages,
     )
+    original_leg_count = len(legs)
+    if props_only:
+        legs = [leg for leg in legs if leg.category == "prop"]
+    loader_meta = {
+        **loader_meta,
+        "recognized_legs_raw": original_leg_count,
+        "moneylines_filtered": max(0, original_leg_count - len(legs)) if props_only else 0,
+        "leg_filter": "props_only" if props_only else "all",
+        "recognized_legs": len(legs),
+    }
     if not legs:
         return {
             "meta": {
@@ -3454,11 +3575,14 @@ def run_oracle(
             "tier_parlays": [],
             "moonshot": None,
             "fades": [],
+            "theses": [],
+            "thesis_candidates": [],
             "config": {
                 "date": date_str,
                 "sport": sport,
                 "slate_mode": slate_mode,
                 "score_source": score_source,
+                "props_only": props_only,
                 "kalshi_pages": kalshi_pages,
                 "fallback": fallback,
                 "bytes": n_bytes,
@@ -3528,6 +3652,7 @@ def run_oracle(
         "sport": sport,
         "slate_mode": slate_mode,
         "score_source": score_source,
+        "props_only": props_only,
         "kalshi_pages": kalshi_pages,
         "fallback": fallback,
         "bytes": n_bytes,

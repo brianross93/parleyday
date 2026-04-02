@@ -13,6 +13,27 @@
         --line: #d9cdb5;
         --accent: #0b6e4f;
         --accent-2: #8b1e3f;
+        --panel-strong: rgba(255, 250, 240, 0.92);
+        --surface: rgba(255,255,255,0.72);
+        --surface-strong: white;
+        --shadow: rgba(31, 41, 51, 0.08);
+        --details-line: rgba(217,205,181,0.8);
+        --item-line: rgba(217,205,181,0.7);
+      }
+      html[data-theme="dark"] {
+        --bg: #11161d;
+        --panel: #1b2430;
+        --ink: #eef2f7;
+        --muted: #a7b4c3;
+        --line: #2f3a4a;
+        --accent: #57c7a0;
+        --accent-2: #f18ca6;
+        --panel-strong: rgba(27, 36, 48, 0.94);
+        --surface: rgba(20, 29, 39, 0.82);
+        --surface-strong: #121923;
+        --shadow: rgba(0, 0, 0, 0.35);
+        --details-line: rgba(47,58,74,0.9);
+        --item-line: rgba(47,58,74,0.8);
       }
       * { box-sizing: border-box; }
       body {
@@ -23,6 +44,12 @@
           radial-gradient(circle at top left, rgba(184,134,11,.18), transparent 28%),
           radial-gradient(circle at top right, rgba(11,110,79,.12), transparent 22%),
           linear-gradient(180deg, #f7f2e8 0%, var(--bg) 100%);
+      }
+      html[data-theme="dark"] body {
+        background:
+          radial-gradient(circle at top left, rgba(241,140,166,.08), transparent 30%),
+          radial-gradient(circle at top right, rgba(87,199,160,.10), transparent 24%),
+          linear-gradient(180deg, #141b24 0%, var(--bg) 100%);
       }
       .shell {
         max-width: 1400px;
@@ -36,10 +63,10 @@
         align-items: start;
       }
       .title-card, .panel, .card {
-        background: rgba(255, 250, 240, 0.92);
+        background: var(--panel-strong);
         border: 1px solid var(--line);
         border-radius: 18px;
-        box-shadow: 0 12px 30px rgba(31, 41, 51, 0.08);
+        box-shadow: 0 12px 30px var(--shadow);
       }
       .title-card, .panel, .card, .stat {
         padding: 20px;
@@ -69,7 +96,7 @@
         border-radius: 999px;
         padding: 8px 12px;
         font-size: 0.85rem;
-        background: rgba(255,255,255,0.6);
+        background: var(--surface);
       }
       .badge--sim {
         background: rgba(11,110,79,0.12);
@@ -111,7 +138,7 @@
         border: 1px solid var(--line);
         border-radius: 12px;
         padding: 10px 12px;
-        background: white;
+        background: var(--surface-strong);
         color: var(--ink);
       }
       .check {
@@ -124,7 +151,7 @@
         width: auto;
       }
       details {
-        border-top: 1px solid rgba(217,205,181,0.8);
+        border-top: 1px solid var(--details-line);
         padding-top: 10px;
       }
       summary {
@@ -152,10 +179,10 @@
         gap: 12px;
       }
       .stat {
-        background: rgba(255, 250, 240, 0.92);
+        background: var(--panel-strong);
         border: 1px solid var(--line);
         border-radius: 18px;
-        box-shadow: 0 12px 30px rgba(31, 41, 51, 0.08);
+        box-shadow: 0 12px 30px var(--shadow);
       }
       .stat .k {
         color: var(--muted);
@@ -185,7 +212,7 @@
         gap: 10px;
       }
       .item {
-        border-top: 1px solid rgba(217,205,181,0.7);
+        border-top: 1px solid var(--item-line);
         padding-top: 10px;
       }
       .item:first-child {
@@ -217,8 +244,21 @@
         border-radius: 999px;
         padding: 4px 8px;
         font-size: 0.78rem;
-        background: rgba(255,255,255,0.72);
+        background: var(--surface);
         color: var(--muted);
+      }
+      .topbar {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 14px;
+      }
+      .theme-toggle {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--ink);
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-weight: 700;
       }
       .chip--sim {
         background: rgba(11,110,79,0.10);
@@ -273,6 +313,20 @@
         font: inherit;
         resize: vertical;
       }
+      .inline-form {
+        margin-top: 10px;
+        display: grid;
+        gap: 10px;
+      }
+      .inline-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+      .inline-grid button {
+        white-space: nowrap;
+      }
       .error {
         border: 1px solid #d64545;
         background: #fff1f1;
@@ -296,6 +350,9 @@
   </head>
   <body>
     <div class="shell">
+      <div class="topbar">
+        <button type="button" class="theme-toggle" data-theme-toggle>Dark Mode</button>
+      </div>
       <div class="hero">
         <section class="title-card">
           <h1>Parlay State Search Dashboard</h1>
@@ -307,6 +364,7 @@
             <div class="badge">Local Flask app</div>
             <div class="badge">Market-first default model</div>
             <div class="badge">MLB / NBA capable</div>
+            <div class="badge"><a href="/dfs" style="color: inherit; text-decoration: none;">DraftKings DFS View</a></div>
           </div>
         </section>
 
@@ -375,6 +433,16 @@
               Add an OpenAI judgment pass over the slate summary and live roster context
             </label>
 
+            <label class="check">
+              <input type="checkbox" name="props_only" {% if form.props_only %}checked{% endif %}>
+              Only score player props and drop moneylines and game totals
+            </label>
+
+            <label class="check">
+              <input type="checkbox" name="llm_web_search" {% if form.llm_web_search %}checked{% endif %}>
+              Let the OpenAI pass use web search when cached slate info is missing or stale
+            </label>
+
             <details>
               <summary>Advanced Settings</summary>
               <div class="grid" style="margin-top: 12px;">
@@ -431,6 +499,7 @@
             <div class="stat"><div class="k">Sports</div><div class="v">{{ result.meta.sports }}</div></div>
             <div class="stat"><div class="k">Games</div><div class="v">{{ result.meta.games }}</div></div>
             <div class="stat"><div class="k">Recognized Legs</div><div class="v">{{ result.meta.recognized_legs }}</div></div>
+            <div class="stat"><div class="k">Leg Filter</div><div class="v">{{ result.meta.leg_filter|default("all") }}</div></div>
             <div class="stat"><div class="k">Score Mode</div><div class="v">{{ result.config.score_source }}</div></div>
             <div class="stat"><div class="k">Engine</div><div class="v">{{ result.meta.entropy_source }}</div></div>
           </section>
@@ -453,89 +522,345 @@
 
           <div class="columns">
             <div class="stack">
-              <section class="card">
-                <h3>Recommended Parlays</h3>
-                <div class="list">
-                  {% for parlay in result.tier_parlays %}
-                    <div class="item">
-                      <div class="parlay-header">
-                        <div class="label">{{ parlay.label }} · {{ parlay.actual_size }}-Leg Parlay</div>
-                        <div class="payout">
-                          {% if parlay.payout_estimate %}
-                            ~{{ "%.1f"|format(parlay.payout_estimate) }}x
-                          {% else %}
-                            unavailable
+              <details class="card">
+                <summary><strong>Debug</strong> · thesis generation and verification details</summary>
+
+                <section>
+                  <h3>Structured Theses</h3>
+                  {% if result.theses %}
+                    <div class="list">
+                      {% for thesis in result.theses[:8] %}
+                        <div class="item">
+                          <div class="label-row">
+                            <div class="label">{{ thesis.type.replace("_", " ")|title }}</div>
+                            <div>{{ "%.2f"|format(thesis.verified_confidence|default(thesis.confidence|default(0, true), true)) }}</div>
+                          </div>
+                          <div class="meta">{{ thesis.sport|upper }} · {{ (thesis.games|join(", ")) if thesis.games else "" }} · {{ thesis.source }}</div>
+                          <div class="meta">{{ thesis.summary }}</div>
+                          <div class="meta">Status: {{ thesis.verification_status|default("unverified", true) }}</div>
+                          {% if thesis.supporting_facts %}
+                            <div class="meta">{{ thesis.supporting_facts|join(" · ") }}</div>
+                          {% endif %}
+                          {% if thesis.verification_notes %}
+                            <div class="meta">Verify: {{ thesis.verification_notes|join(" Â· ") }}</div>
+                          {% endif %}
+                          {% if thesis.missing_information %}
+                            <div class="meta">Missing: {{ thesis.missing_information|join(", ") }}</div>
+                          {% endif %}
+                          {% if thesis.kill_conditions %}
+                            <div class="meta">Kill: {{ thesis.kill_conditions|join(", ") }}</div>
+                          {% endif %}
+                          {% if thesis.verification_sources %}
+                            <div class="meta-row">
+                              {% for source in thesis.verification_sources %}
+                                <a class="chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                              {% endfor %}
+                            </div>
                           {% endif %}
                         </div>
-                      </div>
-                      <div class="meta">{{ parlay.description }} Bankroll hint: {{ parlay.bankroll_hint }}</div>
-                      {% if parlay.model_joint_prob %}
-                        <div class="meta">Model joint {{ "%.3f"|format(parlay.model_joint_prob) }} Â· market joint {{ "%.3f"|format(parlay.market_joint_prob) }} Â· avg edge {{ "%+.3f"|format(parlay.average_edge) }}</div>
-                      {% endif %}
-                      {% if parlay.legs %}
-                        <div class="list">
-                          {% for leg in parlay.legs %}
-                            <div class="item">
-                              <div class="label-row">
-                                <div class="label">{{ leg.label }}</div>
-                                <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
-                              </div>
-                              <div class="meta">
-                                {{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }}
-                                · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}
-                                · {{ leg.notes }}
-                              </div>
-                              <div class="meta-row">
-                                <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
-                                {% if leg.pricing_reason %}
-                                  <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
-                                {% endif %}
-                              </div>
-                            </div>
-                          {% endfor %}
-                        </div>
-                      {% else %}
-                        <div class="empty">No viable recommendation cleared the current quality filters for this slate.</div>
-                      {% endif %}
+                      {% endfor %}
                     </div>
-                  {% endfor %}
-                </div>
-              </section>
+                  {% else %}
+                    <div class="empty">No structured theses were generated for this slate yet.</div>
+                  {% endif %}
+                </section>
 
-              <section class="card">
-                <h3>Top Scores</h3>
-                <div class="list">
-                  {% for leg in result.top_legs %}
-                    <div class="item">
-                      <div class="label-row">
-                        <div class="label">#{{ leg.rank }} {{ leg.label }}</div>
-                        <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
+                <section>
+                  <h3>Intuition Theses</h3>
+                  {% if result.intuition_theses %}
+                    {% if result.intuition_thesis_meta %}
+                      <div class="meta">
+                        {{ result.intuition_thesis_meta.model }} · reasoning {{ result.intuition_thesis_meta.reasoning_effort }}
+                        {% if result.intuition_thesis_meta.web_search_enabled %} · web search enabled{% endif %}
                       </div>
-                      <div class="meta">{{ leg.game|default("", true) }} · {{ leg.category|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}</div>
-                      <div class="meta-row">
-                        <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
-                        {% if leg.pricing_reason %}
-                          <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
-                        {% endif %}
-                        <div class="chip">{{ leg.notes }}</div>
-                      </div>
+                    {% endif %}
+                    <div class="list">
+                      {% for thesis in result.intuition_theses[:6] %}
+                        <div class="item">
+                          <div class="label-row">
+                            <div class="label">{{ thesis.type.replace("_", " ")|title }}</div>
+                            <div>{{ "%.2f"|format(thesis.verified_confidence|default(thesis.confidence|default(0, true), true)) }}</div>
+                          </div>
+                          <div class="meta">{{ thesis.sport|upper }} · {{ (thesis.games|join(", ")) if thesis.games else "" }} · {{ thesis.source }}</div>
+                          <div class="meta">{{ thesis.summary }}</div>
+                          {% if thesis.supporting_facts %}
+                            <div class="meta">{{ thesis.supporting_facts|join(" · ") }}</div>
+                          {% endif %}
+                          {% if thesis.missing_information %}
+                            <div class="meta">Missing: {{ thesis.missing_information|join(", ") }}</div>
+                          {% endif %}
+                          {% if thesis.kill_conditions %}
+                            <div class="meta">Kill: {{ thesis.kill_conditions|join(", ") }}</div>
+                          {% endif %}
+                        </div>
+                      {% endfor %}
                     </div>
-                  {% endfor %}
-                </div>
-              </section>
+                  {% elif result.intuition_thesis_meta and result.intuition_thesis_meta.status != "ok" %}
+                    <div class="empty">{{ result.intuition_thesis_meta.message }}</div>
+                  {% else %}
+                    <div class="empty">Enable the OpenAI pass to generate bounded intuition theses.</div>
+                  {% endif %}
+                </section>
+
+                <section>
+                  <h3>Thesis Candidates</h3>
+                  {% if result.thesis_candidates %}
+                    <div class="list">
+                      {% for thesis in result.thesis_candidates[:6] %}
+                        <div class="item">
+                          <div class="label-row">
+                            <div class="label">{{ thesis.type.replace("_", " ")|title }}</div>
+                            <div>{{ "%.2f"|format(thesis.confidence|default(0, true)) }}</div>
+                          </div>
+                          <div class="meta">{{ thesis.sport|upper }} · {{ (thesis.games|join(", ")) if thesis.games else "" }} · {{ thesis.verification_status|default("unverified", true) }}</div>
+                          <div class="meta">{{ thesis.summary }}</div>
+                          {% if thesis.best_candidate %}
+                            <div class="meta">Best expression · {{ thesis.best_candidate.actual_size }} legs · ~{{ "%.1f"|format(thesis.best_candidate.payout_estimate|default(0, true)) }}x · model joint {{ "%.3f"|format(thesis.best_candidate.model_joint_prob|default(0, true)) }}</div>
+                            <div class="meta-row">
+                              {% for leg in thesis.best_candidate.legs %}
+                                <div class="chip">{{ leg.label }}</div>
+                              {% endfor %}
+                            </div>
+                            {% if thesis.best_candidate.data_quality_flags %}
+                              <div class="meta">Flags: {{ thesis.best_candidate.data_quality_flags|join(", ") }}</div>
+                            {% endif %}
+                          {% else %}
+                            <div class="empty">No candidate expression was built for this thesis yet.</div>
+                          {% endif %}
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <div class="empty">No thesis-based candidate expressions were built for this slate yet.</div>
+                  {% endif %}
+                </section>
+              </details>
+
+              {% if result.tier_parlays %}
+                <section class="card">
+                  <h3>Recommended Parlays</h3>
+                  <div class="list">
+                    {% for parlay in result.tier_parlays %}
+                      <div class="item">
+                        <div class="parlay-header">
+                          <div class="label">{{ parlay.label }} · {{ parlay.actual_size }}-Leg Parlay</div>
+                          <div class="payout">
+                            {% if parlay.payout_estimate %}
+                              ~{{ "%.1f"|format(parlay.payout_estimate) }}x
+                            {% else %}
+                              unavailable
+                            {% endif %}
+                          </div>
+                        </div>
+                        <div class="meta">{{ parlay.description }} Bankroll hint: {{ parlay.bankroll_hint }}</div>
+                        {% if parlay.model_joint_prob %}
+                          <div class="meta">Model joint {{ "%.3f"|format(parlay.model_joint_prob) }} Â· market joint {{ "%.3f"|format(parlay.market_joint_prob) }} Â· avg edge {{ "%+.3f"|format(parlay.average_edge) }}</div>
+                        {% endif %}
+                        {% if parlay.legs %}
+                          <div class="list">
+                            {% for leg in parlay.legs %}
+                              <div class="item">
+                                <div class="label-row">
+                                  <div class="label">{{ leg.label }}</div>
+                                  <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
+                                </div>
+                                <div class="meta">
+                                  {{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · cost {{ "%.3f"|format(leg.entry_price|default(leg.implied_prob|default(0, true), true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }}
+                                  · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}
+                                  · {{ leg.notes }}
+                                </div>
+                                <div class="meta-row">
+                                  <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
+                                  {% if leg.pricing_reason %}
+                                    <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
+                                  {% endif %}
+                                </div>
+                              </div>
+                            {% endfor %}
+                          </div>
+                        {% else %}
+                          <div class="empty">No recommendation could be constructed for this payout target from the current leg pool.</div>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              <details class="card">
+                <summary><strong>Debug</strong> · thesis supporting legs</summary>
+                <h3>Supporting Legs</h3>
+                {% if result.thesis_candidates %}
+                  <div class="list">
+                    {% for thesis in result.thesis_candidates[:6] %}
+                      <div class="item">
+                        <div class="label-row">
+                          <div class="label">{{ thesis.type.replace("_", " ")|title }}</div>
+                          <div>{{ "%.2f"|format(thesis.confidence|default(0, true)) }}</div>
+                        </div>
+                        <div class="meta">{{ thesis.summary }}</div>
+                        {% if thesis.supporting_legs %}
+                          <div class="list">
+                            {% for leg in thesis.supporting_legs %}
+                              <div class="item">
+                                <div class="label-row">
+                                  <div class="label">{{ leg.label }}</div>
+                                  <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
+                                </div>
+                                <div class="meta">{{ leg.game|default("", true) }} · {{ leg.category|default("", true) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · cost {{ "%.3f"|format(leg.entry_price|default(leg.implied_prob|default(0, true), true)) }}</div>
+                                <div class="meta-row">
+                                  <div class="chip">{{ leg.intent_type|default("mixed", true) }}</div>
+                                  <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
+                                  {% if leg.pricing_reason %}
+                                    <div class="chip chip--fallback">{{ leg.pricing_reason }}</div>
+                                  {% endif %}
+                                </div>
+                              </div>
+                            {% endfor %}
+                          </div>
+                        {% else %}
+                          <div class="empty">No supporting legs were identified for this thesis.</div>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="empty">No thesis-aware supporting leg clusters were built for this slate.</div>
+                {% endif %}
+              </details>
             </div>
 
             <div class="stack">
               <section class="card">
+                <h3>Thesis Board</h3>
+                {% if result.thesis_judgment and result.thesis_judgment.status == "ok" %}
+                  <div class="meta">
+                    {% if result.thesis_judgment.web_search_enabled %}
+                      web search enabled Â·
+                    {% endif %}
+                    {{ result.thesis_judgment.model }} Ã‚Â· reasoning {{ result.thesis_judgment.reasoning_effort }}
+                    {% if result.thesis_judgment.generated_at %}
+                      Ã‚Â· {{ result.thesis_judgment.generated_at }}
+                    {% endif %}
+                  </div>
+                  {% if result.thesis_judgment.call %}
+                    <div class="meta"><strong>Call:</strong> {{ result.thesis_judgment.call }}</div>
+                  {% endif %}
+                  {% if result.thesis_judgment.portfolio_note %}
+                    <div class="meta"><strong>Portfolio:</strong> {{ result.thesis_judgment.portfolio_note }}</div>
+                  {% endif %}
+                  <div class="list">
+                    {% for thesis in result.thesis_judgment.ranked_theses %}
+                      <div class="item">
+                        <div class="label-row">
+                          <div class="label">{{ thesis.verdict|upper }} · {{ thesis.thesis_id }}</div>
+                          <div>{{ "%.2f"|format(thesis.confidence|default(0, true)) }}</div>
+                        </div>
+                        {% if thesis.reason %}
+                          <div class="meta">{{ thesis.reason }}</div>
+                        {% endif %}
+                        {% if thesis.best_candidate %}
+                          <div class="meta">Best expression · {{ thesis.best_candidate.actual_size }} legs · ~{{ "%.1f"|format(thesis.best_candidate.payout_estimate|default(0, true)) }}x · model joint {{ "%.3f"|format(thesis.best_candidate.model_joint_prob|default(0, true)) }}</div>
+                          <div class="meta-row">
+                            {% for leg in thesis.best_candidate.legs %}
+                              <div class="chip">{{ leg.label }}</div>
+                            {% endfor %}
+                          </div>
+                          <form method="post" class="inline-form">
+                            <input type="hidden" name="action" value="compare_quote">
+                            <input type="hidden" name="thesis_id" value="{{ thesis.thesis_id }}">
+                            <input type="hidden" name="date" value="{{ form.date }}">
+                            <input type="hidden" name="sport" value="{{ form.sport }}">
+                            <input type="hidden" name="slate_mode" value="{{ form.slate_mode }}">
+                            <input type="hidden" name="score_source" value="{{ form.score_source }}">
+                            {% if form.props_only %}<input type="hidden" name="props_only" value="on">{% endif %}
+                            <input type="hidden" name="kalshi_pages" value="{{ form.kalshi_pages }}">
+                            <input type="hidden" name="samples_per_beta" value="{{ form.samples_per_beta }}">
+                            <input type="hidden" name="warmup" value="{{ form.warmup }}">
+                            <input type="hidden" name="thin" value="{{ form.thin }}">
+                            <input type="hidden" name="bytes" value="{{ form.bytes }}">
+                            <input type="hidden" name="llm_model" value="{{ form.llm_model }}">
+                            <input type="hidden" name="llm_reasoning_effort" value="{{ form.llm_reasoning_effort }}">
+                            {% if form.llm_web_search %}<input type="hidden" name="llm_web_search" value="on">{% endif %}
+                            {% if form.refresh_first %}<input type="hidden" name="refresh_first" value="on">{% endif %}
+                            {% if form.fallback %}<input type="hidden" name="fallback" value="on">{% endif %}
+                            {% if form.llm_judge %}<input type="hidden" name="llm_judge" value="on">{% endif %}
+                            <div class="inline-grid">
+                              <label>
+                                <span class="label-title">Observed Kalshi Combo Payout</span>
+                                <span class="help">Enter the payout Kalshi showed for this exact combo expression.</span>
+                                <input type="number" step="0.1" min="0.1" name="quoted_payout" value="{{ '%.1f'|format(thesis.quote_comparison.quoted_payout) if thesis.quote_comparison and thesis.quote_comparison.quoted_payout else '' }}" placeholder="333">
+                              </label>
+                              <button type="submit">Compare Quote</button>
+                            </div>
+                          </form>
+                          {% if thesis.quote_comparison %}
+                            <div class="meta">
+                              Observed payout {{ "%.1f"|format(thesis.quote_comparison.quoted_payout|default(0, true)) }}x
+                              Â· synthetic {{ "%.1f"|format(thesis.quote_comparison.synthetic_payout|default(0, true)) }}x
+                              {% if thesis.quote_comparison.model_fair_payout %}
+                                Â· model-fair {{ "%.1f"|format(thesis.quote_comparison.model_fair_payout) }}x
+                              {% endif %}
+                            </div>
+                            <div class="meta">
+                              {% if thesis.quote_comparison.quote_vs_synthetic_ratio %}
+                                Quote vs synthetic {{ "%+.1f"|format((thesis.quote_comparison.quote_vs_synthetic_ratio - 1) * 100) }}%
+                              {% endif %}
+                              {% if thesis.quote_comparison.quote_vs_model_fair_ratio %}
+                                Â· quote vs model-fair {{ "%+.1f"|format((thesis.quote_comparison.quote_vs_model_fair_ratio - 1) * 100) }}%
+                              {% endif %}
+                              {% if thesis.quote_comparison.quote_vs_market_joint_multiple %}
+                                Â· payout × market-joint {{ "%.2f"|format(thesis.quote_comparison.quote_vs_market_joint_multiple) }}
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                        {% endif %}
+                        {% if thesis.risks %}
+                          <div class="meta">Risks: {{ thesis.risks|join(" Â· ") }}</div>
+                        {% endif %}
+                        {% if thesis.kill_conditions %}
+                          <div class="meta">Kill: {{ thesis.kill_conditions|join(" Â· ") }}</div>
+                        {% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                  {% if result.thesis_judgment.sources %}
+                    <div class="meta">Sources:</div>
+                    <div class="meta-row">
+                      {% for source in result.thesis_judgment.sources %}
+                        <a class="chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                {% elif result.thesis_judgment %}
+                  <div class="meta">{{ result.thesis_judgment.model }} Ã‚Â· reasoning {{ result.thesis_judgment.reasoning_effort }}</div>
+                  <div class="empty">{{ result.thesis_judgment.message }}</div>
+                {% else %}
+                  <div class="empty">Enable the OpenAI judgment pass to rank thesis bundles and candidate expressions.</div>
+                {% endif %}
+              </section>
+
+              <section class="card">
                 <h3>LLM Judgment</h3>
                 {% if result.llm_judgment and result.llm_judgment.status == "ok" %}
                   <div class="meta">
+                    {% if result.llm_judgment.web_search_enabled %}
+                      web search enabled ·
+                    {% endif %}
                     {{ result.llm_judgment.model }} Â· reasoning {{ result.llm_judgment.reasoning_effort }}
                     {% if result.llm_judgment.generated_at %}
                       Â· {{ result.llm_judgment.generated_at }}
                     {% endif %}
                   </div>
                   <div class="judgment-body">{{ result.llm_judgment.text }}</div>
+                  {% if result.llm_judgment.sources %}
+                    <div class="meta">Sources:</div>
+                    <div class="meta-row">
+                      {% for source in result.llm_judgment.sources %}
+                        <a class="chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
                 {% elif result.llm_judgment %}
                   <div class="meta">{{ result.llm_judgment.model }} Â· reasoning {{ result.llm_judgment.reasoning_effort }}</div>
                   <div class="empty">{{ result.llm_judgment.message }}</div>
@@ -563,6 +888,7 @@
                   <input type="hidden" name="sport" value="{{ form.sport }}">
                   <input type="hidden" name="slate_mode" value="{{ form.slate_mode }}">
                   <input type="hidden" name="score_source" value="{{ form.score_source }}">
+                  {% if form.props_only %}<input type="hidden" name="props_only" value="on">{% endif %}
                   <input type="hidden" name="kalshi_pages" value="{{ form.kalshi_pages }}">
                   <input type="hidden" name="samples_per_beta" value="{{ form.samples_per_beta }}">
                   <input type="hidden" name="warmup" value="{{ form.warmup }}">
@@ -570,6 +896,7 @@
                   <input type="hidden" name="bytes" value="{{ form.bytes }}">
                   <input type="hidden" name="llm_model" value="{{ form.llm_model }}">
                   <input type="hidden" name="llm_reasoning_effort" value="{{ form.llm_reasoning_effort }}">
+                  {% if form.llm_web_search %}<input type="hidden" name="llm_web_search" value="on">{% endif %}
                   {% if form.refresh_first %}<input type="hidden" name="refresh_first" value="on">{% endif %}
                   {% if form.fallback %}<input type="hidden" name="fallback" value="on">{% endif %}
                   {% if form.llm_judge %}<input type="hidden" name="llm_judge" value="on">{% endif %}
@@ -582,7 +909,7 @@
                 <h3>Moonshot</h3>
                 {% if result.moonshot %}
                   <div class="label">{{ result.moonshot.label }}</div>
-                  <div class="meta">{{ result.moonshot.game|default("", true) }} · model {{ "%.3f"|format(result.moonshot.activation|default(0, true)) }} · market {{ "%.3f"|format(result.moonshot.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(result.moonshot.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((result.moonshot.trust_score|default(0, true)) * 100) }}</div>
+                  <div class="meta">{{ result.moonshot.game|default("", true) }} · model {{ "%.3f"|format(result.moonshot.activation|default(0, true)) }} · market {{ "%.3f"|format(result.moonshot.implied_prob|default(0, true)) }} · cost {{ "%.3f"|format(result.moonshot.entry_price|default(result.moonshot.implied_prob|default(0, true), true)) }} · edge {{ "%+.3f"|format(result.moonshot.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((result.moonshot.trust_score|default(0, true)) * 100) }}</div>
                   <div class="meta-row">
                     <div class="chip {% if result.moonshot.pricing_source == 'simulation' %}chip--sim{% elif result.moonshot.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ result.moonshot.pricing_label }}</div>
                     {% if result.moonshot.pricing_reason %}
@@ -604,7 +931,7 @@
                         <div class="label">{{ leg.label }}</div>
                         <div>{{ "%.3f"|format(leg.activation|default(0, true)) }}</div>
                       </div>
-                      <div class="meta">{{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}</div>
+                      <div class="meta">{{ leg.game|default("", true) }} · model {{ "%.3f"|format(leg.activation|default(0, true)) }} · market {{ "%.3f"|format(leg.implied_prob|default(0, true)) }} · cost {{ "%.3f"|format(leg.entry_price|default(leg.implied_prob|default(0, true), true)) }} · edge {{ "%+.3f"|format(leg.score_delta|default(0, true)) }} · trust {{ "%.0f"|format((leg.trust_score|default(0, true)) * 100) }}</div>
                       <div class="meta-row">
                         <div class="chip {% if leg.pricing_source == 'simulation' %}chip--sim{% elif leg.pricing_source == 'market_fallback' %}chip--fallback{% endif %}">{{ leg.pricing_label }}</div>
                         {% if leg.pricing_reason %}
@@ -681,6 +1008,28 @@
         {% endif %}
       </div>
     </div>
+    <script>
+      (() => {
+        const storageKey = "dashboard-theme";
+        const root = document.documentElement;
+        const toggle = document.querySelector("[data-theme-toggle]");
+        const applyTheme = (theme) => {
+          root.dataset.theme = theme;
+          if (toggle) {
+            toggle.textContent = theme === "dark" ? "Light Mode" : "Dark Mode";
+          }
+        };
+        const savedTheme = localStorage.getItem(storageKey) || "light";
+        applyTheme(savedTheme);
+        if (toggle) {
+          toggle.addEventListener("click", () => {
+            const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+            localStorage.setItem(storageKey, nextTheme);
+            applyTheme(nextTheme);
+          });
+        }
+      })();
+    </script>
   </body>
   </html>
 

@@ -1,0 +1,220 @@
+from basketball_sim_schema import (
+    BasketballSide,
+    CourtPoint,
+    CourtZone,
+    DefensiveCoverage,
+    DefensiveRole,
+    EventContext,
+    EventType,
+    GameClockState,
+    GameSimulationInput,
+    LineupUnit,
+    OffensiveRole,
+    PlayerCondition,
+    PlayerSimProfile,
+    PlayerTraitProfile,
+    PlayCall,
+    PlayFamily,
+    PossessionContext,
+    PossessionOutcome,
+    PossessionPhase,
+    RotationPlan,
+    ScoreState,
+    ShotType,
+    TeamTactics,
+)
+
+
+def _player(player_id: str, name: str, team_code: str) -> PlayerSimProfile:
+    return PlayerSimProfile(
+        player_id=player_id,
+        name=name,
+        team_code=team_code,
+        positions=("G",),
+        offensive_role=OffensiveRole.PRIMARY_CREATOR,
+        defensive_role=DefensiveRole.POINT_OF_ATTACK,
+        traits=PlayerTraitProfile(
+            ball_security=13.0,
+            separation=14.0,
+            burst=12.0,
+            pullup_shooting=14.0,
+            catch_shoot=11.0,
+            finishing=12.0,
+            pass_vision=15.0,
+            pass_accuracy=14.0,
+            decision_making=14.0,
+            screen_setting=6.0,
+            oreb=8.0,
+            free_throw_rating=13.0,
+            ft_pct_raw=0.82,
+            foul_drawing=12.0,
+            containment=13.0,
+            closeout=12.0,
+            screen_nav=11.0,
+            interior_def=8.0,
+            rim_protect=6.0,
+            steal_pressure=12.0,
+            dreb=9.0,
+            foul_discipline=11.0,
+            help_rotation=11.0,
+            stamina=13.0,
+            size=10.0,
+            reach=10.0,
+        ),
+        condition=PlayerCondition(),
+    )
+
+
+def test_schema_supports_possession_level_game_input() -> None:
+    tactics = TeamTactics(
+        pace_target=99.5,
+        transition_frequency=0.16,
+        crash_glass_rate=0.24,
+        help_aggressiveness=0.52,
+        switch_rate=0.38,
+        zone_rate=0.06,
+        no_middle_rate=0.22,
+        pre_switch_rate=0.14,
+        rotation_tightness=0.7,
+        late_clock_isolation_rate=0.18,
+        early_offense_rate=0.2,
+        pick_and_roll_rate=0.34,
+        handoff_rate=0.11,
+        post_touch_rate=0.08,
+        off_ball_screen_rate=0.14,
+        play_family_weights={
+            PlayFamily.HIGH_PICK_AND_ROLL: 0.4,
+            PlayFamily.HORNS: 0.2,
+            PlayFamily.HANDOFF: 0.15,
+            PlayFamily.ISO: 0.1,
+            PlayFamily.RESET: 0.15,
+        },
+        coverage_weights={
+            DefensiveCoverage.MAN: 0.45,
+            DefensiveCoverage.SWITCH: 0.25,
+            DefensiveCoverage.DROP: 0.2,
+            DefensiveCoverage.BLITZ: 0.1,
+        },
+    )
+    home_players = tuple(_player(f"h{i}", f"Home {i}", "HOM") for i in range(5))
+    away_players = tuple(_player(f"a{i}", f"Away {i}", "AWY") for i in range(5))
+    sim_input = GameSimulationInput(
+        game_id="test-game",
+        home_team_code="HOM",
+        away_team_code="AWY",
+        players=home_players + away_players,
+        home_tactics=tactics,
+        away_tactics=tactics,
+        home_rotation=RotationPlan(starters=tuple(p.player_id for p in home_players), closing_group=tuple(p.player_id for p in home_players)),
+        away_rotation=RotationPlan(starters=tuple(p.player_id for p in away_players), closing_group=tuple(p.player_id for p in away_players)),
+    )
+    assert sim_input.home_tactics.play_family_weights[PlayFamily.HIGH_PICK_AND_ROLL] == 0.4
+    assert sim_input.away_tactics.coverage_weights[DefensiveCoverage.SWITCH] == 0.25
+    assert sim_input.home_tactics.star_usage_bias == 1.0
+    assert sim_input.home_tactics.shooter_distribution_weights == {}
+
+
+def test_schema_supports_possession_context_and_outcome() -> None:
+    home_players = tuple(_player(f"h{i}", f"Home {i}", "HOM") for i in range(5))
+    away_players = tuple(_player(f"a{i}", f"Away {i}", "AWY") for i in range(5))
+    lineup = LineupUnit(
+        team_code="HOM",
+        player_ids=("p1", "p2", "p3", "p4", "p5"),
+        spacing_score=12.0,
+        creation_score=13.0,
+        rim_pressure_score=12.0,
+        rebounding_score=10.0,
+        switchability_score=11.0,
+        rim_protection_score=9.0,
+    )
+    context = PossessionContext(
+        offense_team_code="HOM",
+        defense_team_code="AWY",
+        clock=GameClockState(period=1, seconds_remaining_in_period=612.0, shot_clock=14.0, possession_number=12),
+        score=ScoreState(offense_score=22, defense_score=18),
+        offense_lineup=lineup,
+        defense_lineup=lineup,
+        offensive_tactics=TeamTactics(
+            pace_target=100.0,
+            transition_frequency=0.17,
+            crash_glass_rate=0.21,
+            help_aggressiveness=0.5,
+            switch_rate=0.3,
+            zone_rate=0.0,
+            no_middle_rate=0.1,
+            pre_switch_rate=0.1,
+            rotation_tightness=0.72,
+            late_clock_isolation_rate=0.12,
+            early_offense_rate=0.22,
+            pick_and_roll_rate=0.35,
+            handoff_rate=0.1,
+            post_touch_rate=0.08,
+            off_ball_screen_rate=0.16,
+            play_family_weights={PlayFamily.HIGH_PICK_AND_ROLL: 1.0},
+            coverage_weights={DefensiveCoverage.MAN: 1.0},
+        ),
+        defensive_tactics=TeamTactics(
+            pace_target=100.0,
+            transition_frequency=0.17,
+            crash_glass_rate=0.21,
+            help_aggressiveness=0.5,
+            switch_rate=0.3,
+            zone_rate=0.0,
+            no_middle_rate=0.1,
+            pre_switch_rate=0.1,
+            rotation_tightness=0.72,
+            late_clock_isolation_rate=0.12,
+            early_offense_rate=0.22,
+            pick_and_roll_rate=0.35,
+            handoff_rate=0.1,
+            post_touch_rate=0.08,
+            off_ball_screen_rate=0.16,
+            play_family_weights={PlayFamily.HIGH_PICK_AND_ROLL: 1.0},
+            coverage_weights={DefensiveCoverage.MAN: 1.0},
+        ),
+        floor_players=(),
+        defensive_assignments=(),
+        player_pool=home_players + away_players,
+        current_phase=PossessionPhase.PRIMARY_ACTION,
+        play_call=PlayCall(
+            family=PlayFamily.HIGH_PICK_AND_ROLL,
+            primary_actor_id="p1",
+            screener_id="p5",
+            target_zone=CourtZone.TOP,
+            intended_shot_type=ShotType.RIM,
+        ),
+        coverage=DefensiveCoverage.DROP,
+    )
+    outcome = PossessionOutcome(
+        points_scored=2,
+        made_shot=True,
+        turnover=False,
+        foul_committed=False,
+        offensive_rebound=False,
+        shooting_player_id="p1",
+        assisting_player_id="p5",
+        rebounder_id=None,
+        turnover_player_id=None,
+        events=(
+            EventContext(
+                event_type=EventType.SCREEN,
+                actor_id="p5",
+                receiver_id="p1",
+                location=CourtPoint(x=0.0, y=22.0, zone=CourtZone.TOP),
+                success_probability=0.62,
+                realized_success=True,
+            ),
+            EventContext(
+                event_type=EventType.SHOT,
+                actor_id="p1",
+                shot_type=ShotType.RIM,
+                location=CourtPoint(x=1.2, y=4.5, zone=CourtZone.RIM),
+                success_probability=0.58,
+                realized_success=True,
+                points_scored=2,
+            ),
+        ),
+    )
+    assert context.play_call.family == PlayFamily.HIGH_PICK_AND_ROLL
+    assert outcome.events[-1].event_type == EventType.SHOT
+    assert outcome.points_scored == 2
