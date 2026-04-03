@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Basketball Match View</title>
+    <style>
+      :root {
+        --bg: #0d141c;
+        --panel: rgba(15, 23, 32, 0.9);
+        --panel-2: rgba(22, 31, 42, 0.94);
+        --ink: #edf2f7;
+        --muted: #95a3b3;
+        --line: rgba(148, 163, 184, 0.22);
+        --accent: #48c78e;
+        --accent-2: #e76f51;
+        --accent-3: #ffd166;
+        --court: #c9823f;
+        --court-dark: #a7632c;
+        --paint: rgba(246, 205, 157, 0.32);
+        --shadow: rgba(0, 0, 0, 0.32);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(72,199,142,0.12), transparent 22%),
+          radial-gradient(circle at top right, rgba(255,209,102,0.10), transparent 26%),
+          linear-gradient(180deg, #0b1218 0%, #111b24 100%);
+      }
+      .shell {
+        max-width: 1500px;
+        margin: 0 auto;
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 14px 34px var(--shadow);
+      }
+      .topbar {
+        padding: 14px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+      }
+      .topbar h1 {
+        margin: 0;
+        font-size: 1.8rem;
+        letter-spacing: 0.02em;
+      }
+      .sub {
+        color: var(--muted);
+        margin-top: 6px;
+        max-width: 70ch;
+      }
+      .top-links {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        color: var(--ink);
+        text-decoration: none;
+        background: rgba(255,255,255,0.03);
+      }
+      .scoreboard {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 18px;
+        padding: 16px 20px;
+        background: var(--panel-2);
+      }
+      .team {
+        display: grid;
+        gap: 6px;
+      }
+      .team.away { text-align: right; }
+      .team .code {
+        font-size: 0.9rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+      .team .score {
+        font-size: 3rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .center-clock {
+        text-align: center;
+        min-width: 220px;
+      }
+      .center-clock .period {
+        color: var(--muted);
+        letter-spacing: 0.16em;
+        font-size: 0.82rem;
+        text-transform: uppercase;
+      }
+      .center-clock .clock {
+        font-size: 2.7rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .center-clock .shot {
+        color: var(--accent-3);
+        margin-top: 4px;
+        font-size: 1rem;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 320px 1fr 360px;
+        gap: 14px;
+        align-items: start;
+      }
+      .sidebar {
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+      }
+      .section-title {
+        margin: 0 0 8px;
+        font-size: 0.9rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      form {
+        display: grid;
+        gap: 10px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+      }
+      .label-title {
+        color: var(--ink);
+        font-weight: 700;
+      }
+      input, select, button {
+        font: inherit;
+      }
+      input, select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: rgba(255,255,255,0.06);
+        color: var(--ink);
+      }
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 11px 14px;
+        background: linear-gradient(135deg, #2ea86f 0%, var(--accent) 100%);
+        color: #07130d;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .secondary {
+        background: rgba(255,255,255,0.08);
+        color: var(--ink);
+        border: 1px solid var(--line);
+      }
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .meta-card {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 12px;
+        background: rgba(255,255,255,0.04);
+      }
+      .meta-card .k {
+        color: var(--muted);
+        font-size: 0.76rem;
+        text-transform: uppercase;
+      }
+      .meta-card .v {
+        margin-top: 6px;
+        font-size: 1rem;
+        font-weight: 700;
+      }
+      .main {
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+        align-self: start;
+      }
+      .compact-scroll {
+        max-height: calc(100vh - 210px);
+        overflow: auto;
+      }
+      .scenario-group[data-advanced="true"] {
+        display: grid;
+        gap: 10px;
+      }
+      .game-mode .scenario-group[data-advanced="true"],
+      .game-mode .possession-read,
+      .game-mode .trace {
+        display: none;
+      }
+      .game-mode .sidebar {
+        gap: 10px;
+      }
+      .game-mode .right-rail {
+        max-height: calc(100vh - 210px);
+        overflow: auto;
+      }
+      .game-mode .beat-strip {
+        max-height: calc(100vh - 270px);
+        overflow: auto;
+        padding-right: 4px;
+      }
+      .run-button {
+        margin-top: 6px;
+      }
+      .commentary-bar {
+        min-height: 86px;
+        padding: 16px 18px;
+        display: grid;
+        gap: 6px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(72,199,142,0.16), rgba(255,209,102,0.10));
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .commentary-bar .headline {
+        font-size: 1.15rem;
+        font-weight: 700;
+      }
+      .commentary-bar .body {
+        color: var(--muted);
+      }
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .controls .pill {
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.04);
+        color: var(--muted);
+      }
+      .court-stage {
+        position: relative;
+        overflow: hidden;
+        border-radius: 22px;
+        border: 1px solid var(--line);
+        perspective: 1200px;
+        background:
+          radial-gradient(circle at 50% 93%, rgba(255,255,255,.18), transparent 24%),
+          linear-gradient(180deg, #db9550 0%, var(--court) 70%, var(--court-dark) 100%);
+        box-shadow: inset 0 0 0 2px rgba(0,0,0,0.08);
+      }
+      .broadcast-banner {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: 14px;
+        z-index: 12;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 16px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.10);
+        background: linear-gradient(90deg, rgba(8, 14, 21, 0.92), rgba(16, 25, 35, 0.88));
+        box-shadow: 0 10px 24px rgba(0,0,0,0.22);
+        pointer-events: none;
+      }
+      .broadcast-banner .banner-text {
+        color: var(--ink);
+        font-size: 0.98rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-align: center;
+      }
+      .court {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 50 / 94;
+        overflow: hidden;
+      }
+      .camera {
+        position: absolute;
+        inset: 0;
+        transform-origin: center center;
+        transition: transform 850ms cubic-bezier(0.22, 1, 0.36, 1);
+        will-change: transform;
+      }
+      .court svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .marker, .ball {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        transition:
+          left 800ms cubic-bezier(0.22, 1, 0.36, 1),
+          top 800ms cubic-bezier(0.22, 1, 0.36, 1),
+          box-shadow 250ms ease,
+          transform 250ms ease;
+      }
+      .marker {
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-size: 0.8rem;
+        font-weight: 700;
+        border: 2px solid rgba(255,255,255,0.84);
+        box-shadow: 0 12px 24px rgba(0,0,0,0.20);
+      }
+      .marker.home {
+        background: #1f9d6d;
+        color: white;
+      }
+      .marker.away {
+        background: #c44536;
+        color: white;
+      }
+      .marker.actor {
+        transform: translate(-50%, -50%) scale(1.08);
+        box-shadow: 0 0 0 4px rgba(255,255,255,0.20), 0 12px 24px rgba(0,0,0,0.24);
+      }
+      .marker.receiver {
+        box-shadow: 0 0 0 4px rgba(255,209,102,0.32), 0 12px 24px rgba(0,0,0,0.24);
+      }
+      .marker.defender-focus {
+        border-style: dashed;
+      }
+      .ball {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: radial-gradient(circle at 35% 35%, #ffd7a1 0%, #cb6b1f 40%, #7b3f15 100%);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.26);
+        z-index: 5;
+      }
+      .beat-strip {
+        display: grid;
+        gap: 8px;
+      }
+      .beat {
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.04);
+        border-radius: 14px;
+        padding: 12px;
+        cursor: pointer;
+      }
+      .beat.active {
+        border-color: rgba(72,199,142,0.58);
+        background: rgba(72,199,142,0.10);
+      }
+      .beat .title {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        font-weight: 700;
+      }
+      .beat .meta {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      details.trace {
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      details.trace summary {
+        cursor: pointer;
+        color: var(--muted);
+      }
+      .trace-list {
+        margin-top: 10px;
+        display: grid;
+        gap: 8px;
+        max-height: 320px;
+        overflow: auto;
+      }
+      .trace-item {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: rgba(255,255,255,0.03);
+      }
+      .error {
+        border: 1px solid #d64545;
+        background: rgba(214,69,69,0.14);
+        color: #ffd9d9;
+        padding: 14px 16px;
+        border-radius: 14px;
+      }
+      @media (max-width: 1280px) {
+        .layout { grid-template-columns: 300px 1fr; }
+        .right-rail { grid-column: span 2; }
+      }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+        .right-rail { grid-column: auto; }
+        .scoreboard { grid-template-columns: 1fr; text-align: center; }
+        .team.away { text-align: center; }
+      }
+    </style>
+  </head>
+  {% set active_view_mode = payload.form.view_mode if payload else form.view_mode %}
+  <body class="{% if active_view_mode == 'game' %}game-mode{% endif %}">
+    <div class="shell">
+      <section class="panel topbar">
+        <div>
+          <h1>Basketball Match View</h1>
+          <div class="sub">A lightweight 2D match presentation sitting on top of the possession engine. The idea is closer to Football Manager 2010 than a raw event debugger.</div>
+        </div>
+        <div class="top-links">
+          <a class="chip" href="/">Main Dashboard</a>
+          <a class="chip" href="/basketball-match-view">Reset View</a>
+        </div>
+      </section>
+
+      {% if error %}
+        <div class="error">{{ error }}</div>
+      {% endif %}
+
+      {% if payload %}
+        <section class="panel scoreboard">
+          <div class="team away">
+            <div class="code">{{ payload.summary.defense_team }}</div>
+            <div class="score" id="defense-score">{{ payload.match.initial_scoreboard.defense_score }}</div>
+          </div>
+          <div class="center-clock">
+            <div class="period">Q{{ payload.match.initial_scoreboard.period }}</div>
+            <div class="clock" id="game-clock">{{ payload.match.initial_scoreboard.clock_display }}</div>
+            <div class="shot">Shot Clock <span id="shot-clock">{{ payload.match.initial_scoreboard.shot_clock }}</span></div>
+          </div>
+          <div class="team">
+            <div class="code">{{ payload.summary.offense_team }}</div>
+            <div class="score" id="offense-score">{{ payload.match.initial_scoreboard.offense_score }}</div>
+          </div>
+        </section>
+      {% endif %}
+
+      <div class="layout">
+        <aside class="panel sidebar compact-scroll">
+          <div>
+            <h2 class="section-title">Scenario</h2>
+            <form method="post">
+              <div class="scenario-group">
+                <label>
+                  <span class="label-title">View Mode</span>
+                  <select name="view_mode">
+                    {% for value in (payload.options.view_modes if payload else ['game', 'single']) %}
+                      <option value="{{ value }}" {% if form.view_mode == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Data Mode</span>
+                  <select name="data_mode">
+                    {% for value in (payload.options.data_modes if payload else ['calibration', 'live', 'draftkings_csv']) %}
+                      <option value="{{ value }}" {% if form.data_mode == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Date</span>
+                  <input type="date" name="date" value="{{ form.date }}">
+                </label>
+                <label>
+                  <span class="label-title">Matchup</span>
+                  <select name="matchup">
+                    <option value="">auto</option>
+                    {% for value in (payload.options.matchups if payload else []) %}
+                      <option value="{{ value }}" {% if form.matchup == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">DraftKings CSV</span>
+                  <input type="text" name="csv_path" value="{{ form.csv_path }}" placeholder="/Users/brianross/Downloads/DKSalaries.csv">
+                </label>
+                <label>
+                  <span class="label-title">Seed</span>
+                  <input type="number" name="seed" value="{{ form.seed }}">
+                </label>
+              </div>
+              <div class="scenario-group" data-advanced="true">
+                <label>
+                  <span class="label-title">Play Family</span>
+                  <select name="play_family">
+                    {% for value in (payload.options.play_families if payload else ['high_pick_and_roll', 'iso']) %}
+                      <option value="{{ value }}" {% if form.play_family == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Coverage</span>
+                  <select name="coverage">
+                    {% for value in (payload.options.coverages if payload else ['drop', 'switch']) %}
+                      <option value="{{ value }}" {% if form.coverage == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Entry Type</span>
+                  <select name="entry_type">
+                    {% for value in (payload.options.entry_types if payload else ['normal', 'transition', 'oreb']) %}
+                      <option value="{{ value }}" {% if form.entry_type == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Entry Source</span>
+                  <select name="entry_source">
+                    {% for value in (payload.options.entry_sources if payload else ['dead_ball', 'live_turnover_break', 'defensive_rebound_push', 'made_basket_flow', 'oreb_gather']) %}
+                      <option value="{{ value }}" {% if form.entry_source == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>
+                  <span class="label-title">Offense Team</span>
+                  <select name="offense_team">
+                    {% for value in (payload.options.offense_teams if payload else ['HOM', 'AWY']) %}
+                      <option value="{{ value }}" {% if form.offense_team == value %}selected{% endif %}>{{ value }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              </div>
+              <button class="run-button" type="submit">{% if active_view_mode == 'game' %}Load Match{% else %}Run Match Beat{% endif %}</button>
+            </form>
+          </div>
+
+          {% if payload %}
+            <div class="possession-read">
+              <h2 class="section-title">Possession Read</h2>
+              <div class="meta-grid">
+                <div class="meta-card"><div class="k">Entry</div><div class="v">{{ payload.summary.entry_type }}</div></div>
+                <div class="meta-card"><div class="k">Source</div><div class="v">{{ payload.summary.entry_source }}</div></div>
+                <div class="meta-card"><div class="k">Points</div><div class="v">{{ payload.summary.points_scored }}</div></div>
+                <div class="meta-card"><div class="k">Result</div><div class="v">{% if payload.summary.turnover %}Turnover{% elif payload.summary.foul_committed %}Foul{% elif payload.summary.made_shot %}Made Shot{% else %}Empty{% endif %}</div></div>
+                <div class="meta-card"><div class="k">Shooter</div><div class="v">{{ payload.summary.shooter or "—" }}</div></div>
+                <div class="meta-card"><div class="k">Assist</div><div class="v">{{ payload.summary.assister or "—" }}</div></div>
+              </div>
+              <div class="sub" style="margin-top:10px;">Source: {{ payload.source_meta.title }}{% if payload.source_meta.date %} · {{ payload.source_meta.date }}{% endif %}</div>
+            </div>
+          {% endif %}
+        </aside>
+
+        <main class="panel main">
+          {% if payload %}
+            <div class="commentary-bar">
+              <div class="headline" id="commentary-title">{{ payload.match.beats[0].label if payload.match.beats else "Ready" }}</div>
+              <div class="body" id="commentary-body">{{ payload.match.beats[0].commentary if payload.match.beats else "Run a possession to start." }}</div>
+            </div>
+
+            <div class="controls">
+              <button type="button" class="secondary" id="restart">Restart</button>
+              <button type="button" class="secondary" id="prev-step">Previous</button>
+              <button type="button" id="play-toggle">Play</button>
+              <button type="button" class="secondary" id="next-step">Next</button>
+              <label class="pill">Speed
+                <select id="speed-select" style="margin-left:8px;">
+                  <option value="1">1.0x</option>
+                  <option value="0.8" selected>1.25x</option>
+                  <option value="0.65">1.5x</option>
+                </select>
+              </label>
+              <div class="pill">Beat <span id="beat-index">1</span> / {{ payload.match.beats|length }}</div>
+              <div class="pill" id="beat-type">{{ payload.match.beats[0].event_type if payload.match.beats else "none" }}</div>
+            </div>
+
+            <div class="court-stage">
+              <div class="court" id="court">
+                <div class="camera" id="camera">
+                  <svg viewBox="0 0 500 940" preserveAspectRatio="none" aria-hidden="true">
+                    <rect x="0" y="0" width="500" height="940" fill="none" stroke="#7b4b1e" stroke-width="5"></rect>
+                    <line x1="0" y1="470" x2="500" y2="470" stroke="#f0e6d8" stroke-width="5" stroke-dasharray="14 10" opacity="0.85"></line>
+                    <g transform="translate(0, 470) scale(1, -1)">
+                      <rect x="170" y="350" width="160" height="110" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
+                      <circle cx="250" cy="350" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
+                      <circle cx="250" cy="438" r="7" fill="#7b4b1e"></circle>
+                      <path d="M 30 385 Q 250 280 470 385" fill="none" stroke="#fff4df" stroke-width="4"></path>
+                      <line x1="30" y1="385" x2="30" y2="470" stroke="#fff4df" stroke-width="4"></line>
+                      <line x1="470" y1="385" x2="470" y2="470" stroke="#fff4df" stroke-width="4"></line>
+                    </g>
+                    <g transform="translate(0, 470)">
+                      <rect x="170" y="350" width="160" height="110" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
+                      <circle cx="250" cy="350" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
+                      <circle cx="250" cy="438" r="7" fill="#7b4b1e"></circle>
+                      <path d="M 30 385 Q 250 280 470 385" fill="none" stroke="#fff4df" stroke-width="4"></path>
+                      <line x1="30" y1="385" x2="30" y2="470" stroke="#fff4df" stroke-width="4"></line>
+                      <line x1="470" y1="385" x2="470" y2="470" stroke="#fff4df" stroke-width="4"></line>
+                    </g>
+                  </svg>
+                  <div class="ball" id="ball"></div>
+                </div>
+                <div class="broadcast-banner">
+                  <div class="banner-text">
+                    Welcome to tonight's matchup, the {{ payload.match.away_team }} versus {{ payload.match.home_team }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          {% else %}
+            <div class="commentary-bar">
+              <div class="headline">Run a scenario</div>
+              <div class="body">Pick an entry state, play family, and coverage on the left, then run the possession to watch the engine animate it.</div>
+            </div>
+          {% endif %}
+        </main>
+
+        <aside class="panel sidebar right-rail">
+          {% if payload %}
+            <h2 class="section-title">Match Beats</h2>
+            <div class="beat-strip" id="beat-strip">
+              {% for beat in payload.match.beats %}
+                <div class="beat {% if loop.first %}active{% endif %}" data-index="{{ loop.index0 }}">
+                  <div class="title">
+                    <span>#{{ loop.index }} {{ beat.label }}</span>
+                    <span>{{ beat.clock_display }}</span>
+                  </div>
+                  <div class="meta">{{ beat.commentary }}</div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </aside>
+      </div>
+    </div>
+
+    {% if payload %}
+      <script>
+        const payload = {{ payload|tojson }};
+        const court = document.getElementById("court");
+        const camera = document.getElementById("camera");
+        const beatStrip = document.getElementById("beat-strip");
+        const beatIndex = document.getElementById("beat-index");
+        const beatType = document.getElementById("beat-type");
+        const commentaryTitle = document.getElementById("commentary-title");
+        const commentaryBody = document.getElementById("commentary-body");
+        const offenseScore = document.getElementById("offense-score");
+        const defenseScore = document.getElementById("defense-score");
+        const gameClock = document.getElementById("game-clock");
+        const shotClock = document.getElementById("shot-clock");
+        const ball = document.getElementById("ball");
+        const playToggle = document.getElementById("play-toggle");
+        const speedSelect = document.getElementById("speed-select");
+        const choreography = payload.choreography || { total_duration_ms: 0, segments: [] };
+        const segments = choreography.segments || [];
+        const markers = new Map();
+        let currentBeat = 0;
+        let currentSegment = 0;
+        let currentTimelineMs = 0;
+        let playing = false;
+        let animationHandle = null;
+        let lastFrameTs = null;
+
+        function pctX(x) {
+          return ((x + 25) / 50) * 100;
+        }
+
+        function pctYFull(y, offenseTeam) {
+          const home = payload.match.home_team;
+          const away = payload.match.away_team;
+          const ot = offenseTeam || home;
+          if (ot === away) {
+            return (y / 47) * 50;
+          }
+          return 100 - (y / 47) * 50;
+        }
+
+        function initials(name) {
+          return name.split(" ").map(part => part[0]).slice(0, 2).join("").toUpperCase();
+        }
+
+        function buildMarker(player) {
+          const marker = document.createElement("div");
+          const playerSide = player.team_code === payload.match.home_team ? "home" : "away";
+          marker.className = `marker ${playerSide}`;
+          marker.title = player.name;
+          marker.textContent = initials(player.name);
+          camera.appendChild(marker);
+          markers.set(player.player_id, marker);
+          return marker;
+        }
+
+        function lerp(a, b, t) {
+          return a + ((b - a) * t);
+        }
+
+        function ease(name, t) {
+          const clamped = Math.max(0, Math.min(1, t));
+          if (name === "ease_in_out") {
+            return clamped < 0.5
+              ? 4 * clamped * clamped * clamped
+              : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+          }
+          if (name === "ease_out") {
+            return 1 - Math.pow(1 - clamped, 3);
+          }
+          return clamped;
+        }
+
+        function cameraTransform(track, progress) {
+          const eased = ease(track.easing, progress);
+          const x = lerp(track.start_x, track.end_x, eased);
+          const y = lerp(track.start_y, track.end_y, eased);
+          const scale = lerp(track.start_scale, track.end_scale, eased);
+          return `translate(${x}%, ${y}%) scale(${scale})`;
+        }
+
+        function pointAt(track, progress) {
+          const eased = ease(track.easing, progress);
+          return {
+            x: lerp(track.start.x, track.end.x, eased),
+            y: lerp(track.start.y, track.end.y, eased),
+          };
+        }
+
+        function pointOnBallTrack(track, progress) {
+          const eased = ease(track.easing, progress);
+          if (track.mode === "air" && track.control) {
+            const u = 1 - eased;
+            return {
+              x: (u * u * track.start.x) + (2 * u * eased * track.control.x) + (eased * eased * track.end.x),
+              y: (u * u * track.start.y) + (2 * u * eased * track.control.y) + (eased * eased * track.end.y),
+            };
+          }
+          return pointAt(track, progress);
+        }
+
+        function ballVisualState(track, progress) {
+          const eased = ease(track.easing, progress);
+          if (track.mode === "air") {
+            const lift = Math.sin(Math.PI * eased) * (track.arc_height || 0);
+            return { yOffsetPx: lift * -1.6, scale: 1 + (lift / 42), glow: 0.34 };
+          }
+          if (track.mode === "dribble") {
+            const count = Math.max(1, track.dribble_count || 1);
+            const bounce = Math.abs(Math.sin(Math.PI * count * eased));
+            return { yOffsetPx: bounce * 10, scale: 1 - (bounce * 0.08), glow: 0.2 };
+          }
+          return { yOffsetPx: 0, scale: 1, glow: 0.16 };
+        }
+
+        function setMarkerState(marker, playerId, beat) {
+          marker.classList.toggle("actor", beat?.focus_player_id === playerId);
+          marker.classList.toggle("receiver", beat?.receiver_id === playerId);
+          marker.classList.toggle("defender-focus", beat?.defender_id === playerId);
+        }
+
+        function updateBeatUI(beatIndexValue) {
+          const beat = payload.match.beats[beatIndexValue];
+          if (!beat) return;
+          currentBeat = beatIndexValue;
+          beatIndex.textContent = String(beatIndexValue + 1);
+          beatType.textContent = beat.event_type;
+          commentaryTitle.textContent = beat.label;
+          commentaryBody.textContent = beat.commentary;
+          offenseScore.textContent = String(beat.offense_score);
+          defenseScore.textContent = String(beat.defense_score);
+          gameClock.textContent = beat.clock_display;
+          shotClock.textContent = String(beat.shot_clock);
+          beatStrip.querySelectorAll(".beat").forEach(node => {
+            node.classList.toggle("active", Number(node.dataset.index) === beatIndexValue);
+          });
+        }
+
+        function renderSegmentProgress(segmentIndex, rawProgress) {
+          if (!segments.length) return;
+          const segment = segments[Math.max(0, Math.min(segmentIndex, segments.length - 1))];
+          const beat = payload.match.beats[segment.beat_index];
+          const progress = Math.max(0, Math.min(1, rawProgress));
+          currentSegment = segmentIndex;
+
+          for (const track of segment.actor_tracks) {
+            const marker = markers.get(track.player_id);
+            if (!marker) continue;
+            const point = pointAt(track, progress);
+            marker.style.left = `${pctX(point.x)}%`;
+            marker.style.top = `${pctYFull(point.y, segment.offense_team_code || payload.match.home_team)}%`;
+            setMarkerState(marker, track.player_id, beat);
+          }
+
+          const ballPoint = pointOnBallTrack(segment.ball_track, progress);
+          ball.style.left = `${pctX(ballPoint.x)}%`;
+          ball.style.top = `${pctYFull(ballPoint.y, segment.offense_team_code || payload.match.home_team)}%`;
+          const ballFx = ballVisualState(segment.ball_track, progress);
+          ball.style.transform = `translate(-50%, calc(-50% + ${ballFx.yOffsetPx}px)) scale(${ballFx.scale})`;
+          ball.style.boxShadow = `0 6px 14px rgba(0,0,0,0.26), 0 0 0 ${ballFx.glow}rem rgba(255, 209, 102, 0.22)`;
+          camera.style.transform = cameraTransform(segment.camera_track, progress);
+          updateBeatUI(segment.beat_index);
+        }
+
+        function renderAtTime(ms) {
+          if (!segments.length) return;
+          const clamped = Math.max(0, Math.min(ms, choreography.total_duration_ms));
+          currentTimelineMs = clamped;
+          let targetSegment = segments.length - 1;
+          for (let i = 0; i < segments.length; i += 1) {
+            if (clamped <= segments[i].end_ms) {
+              targetSegment = i;
+              break;
+            }
+          }
+          const segment = segments[targetSegment];
+          const span = Math.max(1, segment.duration_ms);
+          const progress = (clamped - segment.start_ms) / span;
+          renderSegmentProgress(targetSegment, progress);
+        }
+
+        function jumpToBeat(beatNumber) {
+          if (!segments.length) return;
+          const clampedBeat = Math.max(0, Math.min(beatNumber, payload.match.beats.length - 1));
+          const segmentIndex = segments.findIndex(segment => segment.beat_index === clampedBeat);
+          const targetSegment = segmentIndex >= 0 ? segmentIndex : 0;
+          renderAtTime(segments[targetSegment].start_ms);
+        }
+
+        function cancelAnimation() {
+          if (animationHandle) {
+            window.cancelAnimationFrame(animationHandle);
+            animationHandle = null;
+          }
+        }
+
+        function stopAutoplay() {
+          playing = false;
+          playToggle.textContent = "Play";
+          lastFrameTs = null;
+          cancelAnimation();
+        }
+
+        function stepAutoplay(timestamp) {
+          if (!playing) return;
+          if (lastFrameTs == null) {
+            lastFrameTs = timestamp;
+          }
+          const elapsed = timestamp - lastFrameTs;
+          lastFrameTs = timestamp;
+          const playbackRate = 1 / Number(speedSelect.value || "1");
+          const nextTime = currentTimelineMs + (elapsed * playbackRate);
+          if (nextTime >= choreography.total_duration_ms) {
+            renderAtTime(choreography.total_duration_ms);
+            stopAutoplay();
+            return;
+          }
+          renderAtTime(nextTime);
+          animationHandle = window.requestAnimationFrame(stepAutoplay);
+        }
+
+        function startAutoplay() {
+          if (playing) return;
+          if (currentTimelineMs >= choreography.total_duration_ms) {
+            renderAtTime(0);
+          }
+          playing = true;
+          playToggle.textContent = "Pause";
+          lastFrameTs = null;
+          cancelAnimation();
+          animationHandle = window.requestAnimationFrame(stepAutoplay);
+        }
+
+        for (const player of payload.players) {
+          buildMarker(player);
+        }
+
+        document.getElementById("restart")?.addEventListener("click", () => {
+          stopAutoplay();
+          renderAtTime(0);
+        });
+        document.getElementById("prev-step")?.addEventListener("click", () => {
+          stopAutoplay();
+          jumpToBeat(currentBeat - 1);
+        });
+        document.getElementById("next-step")?.addEventListener("click", () => {
+          stopAutoplay();
+          jumpToBeat(currentBeat + 1);
+        });
+        playToggle?.addEventListener("click", () => {
+          if (playing) {
+            stopAutoplay();
+          } else {
+            startAutoplay();
+          }
+        });
+        beatStrip?.addEventListener("click", (event) => {
+          const target = event.target.closest(".beat");
+          if (!target) return;
+          stopAutoplay();
+          jumpToBeat(Number(target.dataset.index));
+        });
+
+        renderAtTime(0);
+      </script>
+    {% endif %}
+  </body>
+</html>

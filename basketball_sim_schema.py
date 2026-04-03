@@ -132,6 +132,17 @@ class EntryType(StrEnum):
     TIMEOUT = "timeout"
 
 
+class EntrySource(StrEnum):
+    DEAD_BALL = "dead_ball"
+    DEFENSIVE_REBOUND_PUSH = "defensive_rebound_push"
+    LIVE_TURNOVER_BREAK = "live_turnover_break"
+    MADE_BASKET_FLOW = "made_basket_flow"
+    OREB_GATHER = "oreb_gather"
+    OREB_TIP = "oreb_tip"
+    OREB_TIP_OUT = "oreb_tip_out"
+    TIMEOUT_ADVANCE = "timeout_advance"
+
+
 class AdvantageState(StrEnum):
     NONE = "none"
     PAINT_TOUCH = "paint_touch"
@@ -346,6 +357,8 @@ class PossessionContext:
     current_phase: PossessionPhase
     play_call: PlayCall | None = None
     coverage: DefensiveCoverage | None = None
+    entry_type: EntryType = EntryType.NORMAL
+    entry_source: EntrySource = EntrySource.DEAD_BALL
 
 
 @dataclass(frozen=True)
@@ -455,6 +468,26 @@ class PlayerBoxScoreProjection:
 
 
 @dataclass(frozen=True)
+class SimulatedPossession:
+    possession_number: int
+    offense_team_code: str
+    defense_team_code: str
+    period: int
+    start_clock: float
+    end_clock: float
+    start_shot_clock: float
+    end_shot_clock: float
+    entry_type: EntryType
+    entry_source: EntrySource
+    start_offense_score: int
+    start_defense_score: int
+    end_offense_score: int
+    end_defense_score: int
+    points_scored: int
+    events: tuple[EventContext, ...]
+
+
+@dataclass(frozen=True)
 class GameSimulationResult:
     game_id: str
     home_team_code: str
@@ -462,6 +495,7 @@ class GameSimulationResult:
     home_score: int
     away_score: int
     possession_count: int
+    possessions: tuple[SimulatedPossession, ...]
     event_log: tuple[EventContext, ...]
     player_box_scores: tuple[PlayerBoxScoreProjection, ...]
     team_box_scores: tuple[TeamBoxScoreProjection, ...]

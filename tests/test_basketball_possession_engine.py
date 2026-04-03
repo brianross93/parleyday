@@ -10,6 +10,9 @@ from basketball_sim_schema import (
     DefensiveAssignment,
     DefensiveCoverage,
     DefensiveRole,
+    EntrySource,
+    EntryType,
+    EventType,
     FoulOutcomeType,
     FloorPlayerState,
     GameClockState,
@@ -99,8 +102,8 @@ def _context(play_family: PlayFamily, coverage: DefensiveCoverage) -> Possession
         handoff_rate=0.08,
         post_touch_rate=0.06,
         off_ball_screen_rate=0.12,
-        play_family_weights={PlayFamily.HIGH_PICK_AND_ROLL: 0.6, PlayFamily.ISO: 0.4},
-        coverage_weights={DefensiveCoverage.DROP: 0.6, DefensiveCoverage.SWITCH: 0.4},
+        play_family_weights={PlayFamily.HIGH_PICK_AND_ROLL: 0.45, PlayFamily.DOUBLE_DRAG: 0.20, PlayFamily.HANDOFF: 0.10, PlayFamily.ISO: 0.25},
+        coverage_weights={DefensiveCoverage.DROP: 0.45, DefensiveCoverage.SWITCH: 0.25, DefensiveCoverage.ICE: 0.15, DefensiveCoverage.HEDGE: 0.15},
     )
     context = PossessionContext(
         offense_team_code="OFF",
@@ -142,7 +145,8 @@ def _context(play_family: PlayFamily, coverage: DefensiveCoverage) -> Possession
         play_call=PlayCall(
             family=play_family,
             primary_actor_id="creator",
-            screener_id="big" if play_family == PlayFamily.HIGH_PICK_AND_ROLL else None,
+            secondary_actor_id="forward" if play_family == PlayFamily.DOUBLE_DRAG else None,
+            screener_id="big" if play_family in {PlayFamily.HIGH_PICK_AND_ROLL, PlayFamily.DOUBLE_DRAG, PlayFamily.HANDOFF} else None,
             target_zone=CourtZone.TOP,
         ),
         coverage=coverage,
@@ -180,6 +184,13 @@ def _context(play_family: PlayFamily, coverage: DefensiveCoverage) -> Possession
 def test_simulate_high_pick_and_roll_returns_valid_minimal_outcome() -> None:
     outcome = simulate_possession(_context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP), random.Random(7))
     assert outcome.events
+
+
+def test_simulate_double_drag_with_hedge_returns_two_screen_flow() -> None:
+    outcome = simulate_possession(_context(PlayFamily.DOUBLE_DRAG, DefensiveCoverage.HEDGE), random.Random(7))
+    assert outcome.events
+    screen_count = sum(1 for event in outcome.events if event.event_type == EventType.SCREEN)
+    assert screen_count >= 2
 
 
 def test_star_usage_bias_steepens_primary_creator_selection() -> None:
@@ -356,3 +367,146 @@ def test_foul_outcome_points_stay_within_two_free_throws() -> None:
             assert 0 <= outcome.points_scored <= 4
             seen_attempts.add(outcome.free_throws_attempted)
     assert seen_attempts
+
+
+def test_transition_entry_adds_advance_event() -> None:
+    context = replace(
+        _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP),
+        entry_type=EntryType.TRANSITION,
+        entry_source=EntrySource.LIVE_TURNOVER_BREAK,
+    )
+    outcome = simulate_possession(context, random.Random(5))
+    assert outcome.events
+    assert outcome.events[0].event_type == EventType.ADVANCE
+    assert "transition_entry" in outcome.events[0].notes
+    assert "live_turnover_break" in outcome.events[0].notes
+
+
+def test_oreb_entry_adds_reentry_event() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    context = replace(
+        base,
+        entry_type=EntryType.OREB,
+        entry_source=EntrySource.OREB_GATHER,
+        clock=replace(base.clock, shot_clock=20.0),
+    )
+    outcome = simulate_possession(context, random.Random(8))
+    assert outcome.events
+    assert outcome.events[0].event_type == EventType.ADVANCE
+    assert "oreb_reentry_14s" in outcome.events[0].notes
+
+
+def test_second_side_can_attack_closeout_or_reset_loop() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    attack_context = replace(
+        base,
+        offensive_tactics=replace(
+            base.offensive_tactics,
+            closeout_attack_rate=0.85,
+            second_side_rate=0.95,
+        ),
+    )
+    reset_context = replace(
+        base,
+        offensive_tactics=replace(
+            base.offensive_tactics,
+            closeout_attack_rate=0.05,
+            second_side_rate=0.98,
+        ),
+    )
+    observed_attack = False
+    observed_reset = False
+    for seed in range(1, 40):
+        attack_outcome = simulate_possession(attack_context, random.Random(seed))
+        attack_notes = " ".join(event.notes for event in attack_outcome.events).lower()
+        if "attack_closeout" in attack_notes:
+            observed_attack = True
+        reset_outcome = simulate_possession(reset_context, random.Random(seed))
+        reset_notes = " ".join(event.notes for event in reset_outcome.events).lower()
+        if "second_side reset" in reset_notes:
+            observed_reset = True
+        if observed_attack and observed_reset:
+            break
+    assert observed_attack
+    assert observed_reset
+
+
+def test_second_side_can_find_cutter() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    context = replace(
+        base,
+        offensive_tactics=replace(
+            base.offensive_tactics,
+            closeout_attack_rate=0.05,
+            second_side_rate=0.98,
+            shooter_distribution_weights={"shooter": 0.6, "wing": 0.8, "forward": 1.2},
+        ),
+    )
+    seen_cut = False
+    for seed in range(1, 80):
+        outcome = simulate_possession(context, random.Random(seed))
+        notes = " ".join(event.notes for event in outcome.events).lower()
+        if "cut_find" in notes:
+            seen_cut = True
+            break
+    assert seen_cut
+
+
+def test_transition_source_changes_profile() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    turnover_context = replace(base, entry_type=EntryType.TRANSITION, entry_source=EntrySource.LIVE_TURNOVER_BREAK)
+    rebound_context = replace(base, entry_type=EntryType.TRANSITION, entry_source=EntrySource.DEFENSIVE_REBOUND_PUSH)
+    turnover_drive_count = 0
+    rebound_trail_count = 0
+    for seed in range(120):
+        turnover_outcome = simulate_possession(turnover_context, random.Random(seed))
+        rebound_outcome = simulate_possession(rebound_context, random.Random(seed))
+        turnover_notes = " ".join(event.notes or "" for event in turnover_outcome.events)
+        rebound_notes = " ".join(event.notes or "" for event in rebound_outcome.events)
+        if any(event.event_type == EventType.DRIVE for event in turnover_outcome.events) and "coverage=" not in turnover_notes:
+            turnover_drive_count += 1
+        if "transition_pitch_ahead" in rebound_notes:
+            rebound_trail_count += 1
+    assert turnover_drive_count > 0
+    assert rebound_trail_count > 0
+
+
+def test_oreb_branch_can_tip_in_tip_out_and_gather_reset() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    context = replace(
+        base,
+        entry_type=EntryType.OREB,
+        entry_source=EntrySource.OREB_GATHER,
+        clock=replace(base.clock, shot_clock=20.0),
+    )
+    seen = set()
+    for seed in range(180):
+        outcome = simulate_possession(context, random.Random(seed))
+        notes = " ".join(event.notes or "" for event in outcome.events)
+        for tag in ("oreb_tip_in", "oreb_tip_out", "oreb_gather_reset"):
+            if tag in notes:
+                seen.add(tag)
+        if len(seen) == 3:
+            break
+    assert seen == {"oreb_tip_in", "oreb_tip_out", "oreb_gather_reset"}
+
+
+def test_second_side_can_re_screen_into_side_pnr() -> None:
+    base = _context(PlayFamily.HIGH_PICK_AND_ROLL, DefensiveCoverage.DROP)
+    context = replace(
+        base,
+        offensive_tactics=replace(
+            base.offensive_tactics,
+            closeout_attack_rate=0.05,
+            second_side_rate=0.98,
+            pick_and_roll_rate=0.98,
+        ),
+    )
+    seen_re_screen = False
+    for seed in range(1, 220):
+        outcome = simulate_possession(context, random.Random(seed))
+        notes = " ".join(event.notes or "" for event in outcome.events).lower()
+        if "second_side re_screen" in notes:
+            seen_re_screen = True
+            break
+    assert seen_re_screen

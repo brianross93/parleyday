@@ -7,6 +7,7 @@ from pathlib import Path
 
 from flask import Flask, render_template, request
 
+from basketball_viewer import build_possession_view_payload, default_viewer_form
 from data_pipeline import DEFAULT_DB_PATH
 from dfs_results import save_dfs_build
 from dfs_strategy import build_mlb_contest_lineups, build_nba_contest_lineups
@@ -408,6 +409,49 @@ def index():
         LATEST_FORM = dict(form)
 
     return render_template("index.html", form=form, result=result, error=error)
+
+
+@app.route("/basketball-viewer", methods=["GET", "POST"])
+@app.route("/basketball-match-view", methods=["GET", "POST"])
+def basketball_viewer():
+    form = default_viewer_form()
+    error = None
+    payload = None
+
+    if request.method == "POST":
+        form = {
+            "view_mode": request.form.get("view_mode", form["view_mode"]),
+            "data_mode": request.form.get("data_mode", form["data_mode"]),
+            "date": request.form.get("date", form["date"]),
+            "matchup": request.form.get("matchup", form["matchup"]),
+            "csv_path": request.form.get("csv_path", form["csv_path"]),
+            "seed": int(request.form.get("seed", form["seed"])),
+            "play_family": request.form.get("play_family", form["play_family"]),
+            "coverage": request.form.get("coverage", form["coverage"]),
+            "entry_type": request.form.get("entry_type", form["entry_type"]),
+            "entry_source": request.form.get("entry_source", form["entry_source"]),
+            "offense_team": request.form.get("offense_team", form["offense_team"]),
+        }
+
+    try:
+        payload = build_possession_view_payload(
+            view_mode=str(form["view_mode"]),
+            data_mode=str(form["data_mode"]),
+            date=str(form["date"]),
+            matchup=str(form["matchup"]),
+            csv_path=str(form["csv_path"]),
+            seed=int(form["seed"]),
+            play_family=str(form["play_family"]),
+            coverage=str(form["coverage"]),
+            entry_type=str(form["entry_type"]),
+            entry_source=str(form["entry_source"]),
+            offense_team=str(form["offense_team"]),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        error = str(exc)
+
+    return render_template("basketball_viewer.html", form=form, payload=payload, error=error)
 
 
 @app.route("/dfs", methods=["GET", "POST"])
