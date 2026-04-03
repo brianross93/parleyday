@@ -762,18 +762,13 @@ def _clamp_point(point: MotionPoint) -> MotionPoint:
 
 
 def _camera_target_from_point(point: MotionPoint, offense_team_code: str, event_type: str) -> tuple[float, float, float]:
-    x_shift = max(-10.0, min(10.0, (point.x / 25.0) * -8.0))
-    py = _full_court_pct_y(point.y, offense_team_code)
-    offense_is_away = offense_team_code.startswith("AWY") or offense_team_code == "AWY"
-    desired_screen_y = 62.0 if offense_is_away else 38.0
-    y_shift = max(-22.0, min(22.0, ((py - desired_screen_y) / 50.0) * 24.0))
     if event_type in {"drive", "shot"}:
-        scale = 1.42
+        scale = 1.08
     elif event_type in {"pass", "possession_change", "possession_start"}:
-        scale = 1.24
+        scale = 1.02
     else:
-        scale = 1.32
-    return (x_shift, y_shift, scale)
+        scale = 1.05
+    return (0.0, 0.0, scale)
 
 
 def _full_court_pct_y(y: float, offense_team_code: str) -> float:

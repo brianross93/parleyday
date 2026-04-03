@@ -31,6 +31,7 @@ from quantum_parlay_oracle import (
     load_game_context_snapshot,
     load_nba_matchup_profile_snapshot,
     nba_availability_status_lookup,
+    team_name_from_code,
 )
 from refresh_slate import fetch_nba_game_contexts
 from data_pipeline.nba_profiles import fetch_nba_team_player_profiles
@@ -144,6 +145,8 @@ def build_possession_view_payload(
     if view_mode == "game":
         game_result = simulate_game(sim_input, rng_seed=seed)
         beats = _build_game_match_beats(game_result, player_lookup)
+        home_display_name = _team_display_name(sim_input.home_team_code)
+        away_display_name = _team_display_name(sim_input.away_team_code)
         initial_scoreboard = {
             "period": 1,
             "clock_display": "12:00",
@@ -171,12 +174,16 @@ def build_possession_view_payload(
         match = {
             "home_team": sim_input.home_team_code,
             "away_team": sim_input.away_team_code,
+            "home_team_name": home_display_name,
+            "away_team_name": away_display_name,
             "initial_scoreboard": initial_scoreboard,
             "beats": beats,
         }
     else:
         outcome = simulate_possession(context, rng=random.Random(seed))
         beats = _build_match_beats(outcome.events, player_lookup, context)
+        home_display_name = _team_display_name(context.offense_team_code)
+        away_display_name = _team_display_name(context.defense_team_code)
         initial_scoreboard = {
             "period": context.clock.period,
             "clock_display": _format_clock(context.clock.seconds_remaining_in_period),
@@ -214,6 +221,8 @@ def build_possession_view_payload(
         match = {
             "home_team": context.offense_team_code,
             "away_team": context.defense_team_code,
+            "home_team_name": home_display_name,
+            "away_team_name": away_display_name,
             "initial_scoreboard": initial_scoreboard,
             "beats": beats,
         }
@@ -302,6 +311,10 @@ def _player_name(player_lookup: dict[str, Any], player_id: str | None) -> str:
         return ""
     player = player_lookup.get(player_id)
     return player.name if player is not None else str(player_id)
+
+
+def _team_display_name(team_code: str) -> str:
+    return team_name_from_code(team_code) or str(team_code)
 
 
 def _coerce_enum(enum_cls: type[EnumT], raw_value: str) -> EnumT:

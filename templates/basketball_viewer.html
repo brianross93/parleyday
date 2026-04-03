@@ -270,22 +270,21 @@
           radial-gradient(circle at 50% 93%, rgba(255,255,255,.18), transparent 24%),
           linear-gradient(180deg, #db9550 0%, var(--court) 70%, var(--court-dark) 100%);
         box-shadow: inset 0 0 0 2px rgba(0,0,0,0.08);
+        display: grid;
+        gap: 10px;
+        padding: 12px;
       }
       .broadcast-banner {
-        position: absolute;
-        left: 16px;
-        right: 16px;
-        bottom: 14px;
-        z-index: 12;
+        position: relative;
+        z-index: 2;
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 10px 16px;
-        border-radius: 999px;
+        padding: 10px 14px;
+        border-radius: 14px;
         border: 1px solid rgba(255,255,255,0.10);
         background: linear-gradient(90deg, rgba(8, 14, 21, 0.92), rgba(16, 25, 35, 0.88));
         box-shadow: 0 10px 24px rgba(0,0,0,0.22);
-        pointer-events: none;
       }
       .broadcast-banner .banner-text {
         color: var(--ink);
@@ -303,7 +302,7 @@
       .camera {
         position: absolute;
         inset: 0;
-        transform-origin: center center;
+        transform-origin: top left;
         transition: transform 850ms cubic-bezier(0.22, 1, 0.36, 1);
         will-change: transform;
       }
@@ -363,6 +362,56 @@
       .beat-strip {
         display: grid;
         gap: 8px;
+      }
+      .stats-panel {
+        display: grid;
+        gap: 14px;
+      }
+      .team-stats-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(255,255,255,0.04);
+        overflow: hidden;
+      }
+      .team-stats-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px 14px;
+        background: rgba(255,255,255,0.05);
+        border-bottom: 1px solid var(--line);
+      }
+      .team-stats-head .name {
+        font-weight: 700;
+      }
+      .team-stats-head .score {
+        color: var(--accent-3);
+        font-weight: 700;
+      }
+      .stats-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.92rem;
+      }
+      .stats-table th,
+      .stats-table td {
+        padding: 9px 10px;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+        text-align: right;
+      }
+      .stats-table th:first-child,
+      .stats-table td:first-child {
+        text-align: left;
+      }
+      .stats-table thead th {
+        color: var(--muted);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .stats-table tbody tr:last-child td {
+        border-bottom: 0;
       }
       .beat {
         border: 1px solid var(--line);
@@ -616,10 +665,10 @@
                   </svg>
                   <div class="ball" id="ball"></div>
                 </div>
-                <div class="broadcast-banner">
-                  <div class="banner-text">
-                    Welcome to tonight's matchup, the {{ payload.match.away_team }} versus {{ payload.match.home_team }}
-                  </div>
+              </div>
+              <div class="broadcast-banner">
+                <div class="banner-text">
+                  Welcome to tonight's matchup, the {{ payload.match.away_team_name or payload.match.away_team }} versus the {{ payload.match.home_team_name or payload.match.home_team }}
                 </div>
               </div>
             </div>
@@ -633,17 +682,46 @@
 
         <aside class="panel sidebar right-rail">
           {% if payload %}
-            <h2 class="section-title">Match Beats</h2>
-            <div class="beat-strip" id="beat-strip">
-              {% for beat in payload.match.beats %}
-                <div class="beat {% if loop.first %}active{% endif %}" data-index="{{ loop.index0 }}">
-                  <div class="title">
-                    <span>#{{ loop.index }} {{ beat.label }}</span>
-                    <span>{{ beat.clock_display }}</span>
-                  </div>
-                  <div class="meta">{{ beat.commentary }}</div>
+            <h2 class="section-title">Live Box Score</h2>
+            <div class="stats-panel">
+              <section class="team-stats-card">
+                <div class="team-stats-head">
+                  <div class="name">{{ payload.match.away_team_name or payload.match.away_team }}</div>
+                  <div class="score" id="away-team-score">{{ payload.match.initial_scoreboard.defense_score }}</div>
                 </div>
-              {% endfor %}
+                <table class="stats-table">
+                  <thead>
+                    <tr>
+                      <th>Player</th>
+                      <th>PTS</th>
+                      <th>REB</th>
+                      <th>AST</th>
+                      <th>TOV</th>
+                      <th>PF</th>
+                    </tr>
+                  </thead>
+                  <tbody id="away-stats-body"></tbody>
+                </table>
+              </section>
+              <section class="team-stats-card">
+                <div class="team-stats-head">
+                  <div class="name">{{ payload.match.home_team_name or payload.match.home_team }}</div>
+                  <div class="score" id="home-team-score">{{ payload.match.initial_scoreboard.offense_score }}</div>
+                </div>
+                <table class="stats-table">
+                  <thead>
+                    <tr>
+                      <th>Player</th>
+                      <th>PTS</th>
+                      <th>REB</th>
+                      <th>AST</th>
+                      <th>TOV</th>
+                      <th>PF</th>
+                    </tr>
+                  </thead>
+                  <tbody id="home-stats-body"></tbody>
+                </table>
+              </section>
             </div>
           {% endif %}
         </aside>
@@ -662,14 +740,19 @@
         const commentaryBody = document.getElementById("commentary-body");
         const offenseScore = document.getElementById("offense-score");
         const defenseScore = document.getElementById("defense-score");
+        const homeTeamScore = document.getElementById("home-team-score");
+        const awayTeamScore = document.getElementById("away-team-score");
         const gameClock = document.getElementById("game-clock");
         const shotClock = document.getElementById("shot-clock");
         const ball = document.getElementById("ball");
         const playToggle = document.getElementById("play-toggle");
         const speedSelect = document.getElementById("speed-select");
+        const homeStatsBody = document.getElementById("home-stats-body");
+        const awayStatsBody = document.getElementById("away-stats-body");
         const choreography = payload.choreography || { total_duration_ms: 0, segments: [] };
         const segments = choreography.segments || [];
         const markers = new Map();
+        const statSnapshots = buildStatSnapshots();
         let currentBeat = 0;
         let currentSegment = 0;
         let currentTimelineMs = 0;
@@ -723,12 +806,26 @@
           return clamped;
         }
 
-        function cameraTransform(track, progress) {
+        function cameraTransform(track, progress, ballPoint, offenseTeam) {
           const eased = ease(track.easing, progress);
-          const x = lerp(track.start_x, track.end_x, eased);
-          const y = lerp(track.start_y, track.end_y, eased);
           const scale = lerp(track.start_scale, track.end_scale, eased);
-          return `translate(${x}%, ${y}%) scale(${scale})`;
+          const width = court.clientWidth || 1000;
+          const height = court.clientHeight || 1880;
+          const scaledWidth = width * scale;
+          const scaledHeight = height * scale;
+          const pointX = (pctX(ballPoint.x) / 100) * width;
+          const pointY = (pctYFull(ballPoint.y, offenseTeam) / 100) * height;
+          const targetXPx = width * 0.5;
+          const targetYPx = width > 900
+            ? height * (offenseTeam === payload.match.away_team ? 0.54 : 0.46)
+            : height * 0.5;
+          const desiredX = targetXPx - (pointX * scale);
+          const desiredY = targetYPx - (pointY * scale);
+          const minX = width - scaledWidth;
+          const minY = height - scaledHeight;
+          const clampedX = Math.min(0, Math.max(minX, desiredX));
+          const clampedY = Math.min(0, Math.max(minY, desiredY));
+          return `translate(${clampedX}px, ${clampedY}px) scale(${scale})`;
         }
 
         function pointAt(track, progress) {
@@ -771,6 +868,103 @@
           marker.classList.toggle("defender-focus", beat?.defender_id === playerId);
         }
 
+        function emptyStats() {
+          return { pts: 0, reb: 0, ast: 0, tov: 0, pf: 0 };
+        }
+
+        function cloneStatsMap(source) {
+          const out = {};
+          for (const [playerId, stats] of Object.entries(source)) {
+            out[playerId] = { ...stats };
+          }
+          return out;
+        }
+
+        function buildStatSnapshots() {
+          const beats = payload.match.beats || [];
+          const events = payload.events || [];
+          const statsByPlayer = {};
+          for (const player of payload.players) {
+            statsByPlayer[player.player_id] = emptyStats();
+          }
+          const snapshots = [];
+          let lastApplied = -1;
+          let recentPass = null;
+          for (let beatCursor = 0; beatCursor < beats.length; beatCursor += 1) {
+            const beat = beats[beatCursor];
+            const end = beat?.event_apply_index != null ? beat.event_apply_index : beatCursor;
+            for (let i = lastApplied + 1; i <= end; i += 1) {
+              const event = events[i];
+              if (!event) continue;
+              const actorId = event.actor_id;
+              const receiverId = event.receiver_id;
+              const eventType = event.event_type;
+              if (eventType === "pass" && event.realized_success) {
+                recentPass = { passer: actorId, receiver: receiverId };
+              }
+              if (eventType === "shot" && actorId && event.realized_success) {
+                statsByPlayer[actorId] = statsByPlayer[actorId] || emptyStats();
+                statsByPlayer[actorId].pts += Number(event.points_scored || 0);
+                if (recentPass && recentPass.receiver === actorId && recentPass.passer && recentPass.passer !== actorId) {
+                  statsByPlayer[recentPass.passer] = statsByPlayer[recentPass.passer] || emptyStats();
+                  statsByPlayer[recentPass.passer].ast += 1;
+                }
+                recentPass = null;
+              } else if (eventType === "rebound" && actorId) {
+                statsByPlayer[actorId] = statsByPlayer[actorId] || emptyStats();
+                statsByPlayer[actorId].reb += 1;
+                recentPass = null;
+              } else if (eventType === "turnover" && actorId) {
+                statsByPlayer[actorId] = statsByPlayer[actorId] || emptyStats();
+                statsByPlayer[actorId].tov += 1;
+                recentPass = null;
+              } else if (eventType === "foul") {
+                const foulOn = event.defender_id || actorId;
+                if (foulOn) {
+                  statsByPlayer[foulOn] = statsByPlayer[foulOn] || emptyStats();
+                  statsByPlayer[foulOn].pf += 1;
+                }
+                recentPass = null;
+              } else if (eventType === "drive" && actorId && recentPass && recentPass.receiver && recentPass.receiver !== actorId) {
+                recentPass = null;
+              }
+              lastApplied = i;
+            }
+            snapshots.push(cloneStatsMap(statsByPlayer));
+          }
+          return snapshots;
+        }
+
+        function renderStatsTable(body, players) {
+          body.innerHTML = "";
+          for (const player of players) {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+              <td>${player.name}</td>
+              <td>${player.stats.pts}</td>
+              <td>${player.stats.reb}</td>
+              <td>${player.stats.ast}</td>
+              <td>${player.stats.tov}</td>
+              <td>${player.stats.pf}</td>
+            `;
+            body.appendChild(row);
+          }
+        }
+
+        function updateStatsUI(beatIndexValue) {
+          const snapshot = statSnapshots[Math.max(0, Math.min(beatIndexValue, statSnapshots.length - 1))] || {};
+          const homePlayers = payload.players
+            .filter(player => player.team_code === payload.match.home_team)
+            .map(player => ({ ...player, stats: snapshot[player.player_id] || emptyStats() }))
+            .sort((a, b) => (b.stats.pts - a.stats.pts) || (b.stats.reb - a.stats.reb) || a.name.localeCompare(b.name));
+          const awayPlayers = payload.players
+            .filter(player => player.team_code === payload.match.away_team)
+            .map(player => ({ ...player, stats: snapshot[player.player_id] || emptyStats() }))
+            .sort((a, b) => (b.stats.pts - a.stats.pts) || (b.stats.reb - a.stats.reb) || a.name.localeCompare(b.name));
+          renderStatsTable(homeStatsBody, homePlayers);
+          renderStatsTable(awayStatsBody, awayPlayers);
+        }
+
         function updateBeatUI(beatIndexValue) {
           const beat = payload.match.beats[beatIndexValue];
           if (!beat) return;
@@ -781,11 +975,11 @@
           commentaryBody.textContent = beat.commentary;
           offenseScore.textContent = String(beat.offense_score);
           defenseScore.textContent = String(beat.defense_score);
+          if (homeTeamScore) homeTeamScore.textContent = String(beat.offense_team_code === payload.match.home_team ? beat.offense_score : beat.defense_score);
+          if (awayTeamScore) awayTeamScore.textContent = String(beat.offense_team_code === payload.match.away_team ? beat.offense_score : beat.defense_score);
           gameClock.textContent = beat.clock_display;
           shotClock.textContent = String(beat.shot_clock);
-          beatStrip.querySelectorAll(".beat").forEach(node => {
-            node.classList.toggle("active", Number(node.dataset.index) === beatIndexValue);
-          });
+          updateStatsUI(beatIndexValue);
         }
 
         function renderSegmentProgress(segmentIndex, rawProgress) {
@@ -810,7 +1004,7 @@
           const ballFx = ballVisualState(segment.ball_track, progress);
           ball.style.transform = `translate(-50%, calc(-50% + ${ballFx.yOffsetPx}px)) scale(${ballFx.scale})`;
           ball.style.boxShadow = `0 6px 14px rgba(0,0,0,0.26), 0 0 0 ${ballFx.glow}rem rgba(255, 209, 102, 0.22)`;
-          camera.style.transform = cameraTransform(segment.camera_track, progress);
+          camera.style.transform = cameraTransform(segment.camera_track, progress, ballPoint, segment.offense_team_code || payload.match.home_team);
           updateBeatUI(segment.beat_index);
         }
 
@@ -906,13 +1100,6 @@
             startAutoplay();
           }
         });
-        beatStrip?.addEventListener("click", (event) => {
-          const target = event.target.closest(".beat");
-          if (!target) return;
-          stopAutoplay();
-          jumpToBeat(Number(target.dataset.index));
-        });
-
         renderAtTime(0);
       </script>
     {% endif %}
