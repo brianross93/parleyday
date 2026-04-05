@@ -171,7 +171,7 @@ class PlayerTraitProfile:
     pass_accuracy: float
     decision_making: float
     screen_setting: float
-    oreb: float
+    rebounding: float
     free_throw_rating: float
     ft_pct_raw: float
     foul_drawing: float
@@ -181,10 +181,10 @@ class PlayerTraitProfile:
     interior_def: float
     rim_protect: float
     steal_pressure: float
-    dreb: float
     foul_discipline: float
     help_rotation: float
     stamina: float
+    speed: float = 10.0
     role_consistency: float = 10.0
     clutch: float = 0.0
     size: float = 10.0
@@ -195,12 +195,24 @@ class PlayerTraitProfile:
         return self.catch_shoot
 
     @property
+    def ball_handle(self) -> float:
+        return self.ball_security
+
+    @property
     def offensive_rebounding(self) -> float:
-        return self.oreb
+        return self.rebounding
 
     @property
     def defensive_rebounding(self) -> float:
-        return self.dreb
+        return self.rebounding
+
+    @property
+    def oreb(self) -> float:
+        return self.rebounding
+
+    @property
+    def dreb(self) -> float:
+        return self.rebounding
 
     @property
     def perimeter_defense(self) -> float:
@@ -369,6 +381,9 @@ class EventContext:
     defender_id: str | None = None
     location: CourtPoint | None = None
     shot_type: ShotType | None = None
+    shot_distance_feet: float | None = None
+    defender_distance_feet: float | None = None
+    shot_zone_label: str | None = None
     turnover_type: TurnoverType | None = None
     success_probability: float = 0.0
     realized_success: bool | None = None
@@ -396,6 +411,10 @@ class ProgressionState:
     paint_touched: bool = False
     help_committed: bool = False
     swing_count: int = 0
+    action_origin: CourtPoint | None = None
+    current_receiver_location: CourtPoint | None = None
+    primary_defender_location: CourtPoint | None = None
+    help_defender_location: CourtPoint | None = None
     terminal_result: dict[str, object] | None = None
 
 
@@ -472,6 +491,8 @@ class SimulatedPossession:
     possession_number: int
     offense_team_code: str
     defense_team_code: str
+    home_lineup_ids: tuple[str, ...]
+    away_lineup_ids: tuple[str, ...]
     period: int
     start_clock: float
     end_clock: float
@@ -499,3 +520,6 @@ class GameSimulationResult:
     event_log: tuple[EventContext, ...]
     player_box_scores: tuple[PlayerBoxScoreProjection, ...]
     team_box_scores: tuple[TeamBoxScoreProjection, ...]
+    opening_tip_winner: str | None = None
+    tipoff_home_player_id: str | None = None
+    tipoff_away_player_id: str | None = None

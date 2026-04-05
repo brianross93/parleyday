@@ -5,8 +5,10 @@ import random
 from dataclasses import replace
 from typing import Iterable
 
+from basketball_court import basic_zone_label, build_shot_context, contest_distance_from_traits, court_point as geometry_court_point, distance_to_basket, shot_type_from_point
 from basketball_sim_schema import (
     AdvantageState,
+    CourtPoint,
     CourtZone,
     DefensiveAssignment,
     DefensiveCoverage,
@@ -72,7 +74,7 @@ def _prepare_oreb_entry(
 ) -> tuple[PossessionContext, tuple[EventContext, ...], PossessionOutcome | None]:
     rebounder = max(
         _all_players(context, offense=True),
-        key=lambda player: player.traits.oreb + (0.22 * player.traits.finishing) + (0.12 * player.traits.size),
+        key=lambda player: player.traits.rebounding + (0.22 * player.traits.finishing) + (0.12 * player.traits.size),
         default=_get_player(context, context.offense_lineup.player_ids[0]),
     )
     capped_context = _with_entry_clock(context, 14.0)
@@ -90,7 +92,7 @@ def _prepare_oreb_entry(
     tip_in_probability = _clamp(
         0.12
         + (context.offensive_tactics.crash_glass_rate * 0.22)
-        + ((rebounder.traits.oreb + rebounder.traits.finishing + rebounder.traits.reach - 34.0) / 50.0) * 0.18,
+        + ((rebounder.traits.rebounding + rebounder.traits.finishing + rebounder.traits.reach - 34.0) / 50.0) * 0.18,
         0.08,
         0.34,
     )
@@ -98,7 +100,7 @@ def _prepare_oreb_entry(
         0.24
         + (context.offensive_tactics.second_side_rate * 0.24)
         + (context.offense_lineup.spacing_score / 20.0) * 0.08
-        + ((rebounder.traits.oreb + rebounder.traits.pass_accuracy - 20.0) / 40.0) * 0.08,
+        + ((rebounder.traits.rebounding + rebounder.traits.pass_accuracy - 20.0) / 40.0) * 0.08,
         0.20,
         0.52,
     )
@@ -127,7 +129,7 @@ def _prepare_oreb_entry(
             "shooter": rebounder,
             "shot_type": ShotType.RIM,
             "shot_quality": _shot_quality_from_advantage(
-                rebounder.traits.finishing + (0.14 * rebounder.traits.oreb) + (0.10 * rebounder.traits.reach),
+                rebounder.traits.finishing + (0.14 * rebounder.traits.rebounding) + (0.10 * rebounder.traits.reach),
                 ((defender.traits.rim_protect if defender else 10.0) * 0.92) + (0.06 * (defender.traits.size if defender else 10.0)),
                 0.64,
                 base=0.61,
@@ -282,7 +284,18 @@ def _prepare_transition_entry(
         default="flow",
     )
     if decision == "rim_push":
-        action_result = resolve_drive_attempt(capped_context, ball_handler, primary_defender, help_defender, rng)
+        action_result = resolve_drive_attempt(
+            capped_context,
+            ball_handler,
+            primary_defender,
+            help_defender,
+            rng,
+            attack_origin=_player_floor_point(capped_context, ball_handler.player_id) or _court_point("top"),
+            primary_defender_point=_defender_floor_point(capped_context, primary_defender),
+            help_defender_point=_defender_floor_point(capped_context, help_defender),
+            clock_urgency=_clock_urgency(capped_context.clock.shot_clock),
+            help_committed=help_defender is not None,
+        )
         outcome = _materialize_action_result(
             context=capped_context,
             result=action_result,
@@ -296,6 +309,14 @@ def _prepare_transition_entry(
     if decision == "trail_three":
         shooter = _best_shooter(capped_context, exclude_ids={ball_handler.player_id}, rng=rng)
         shooter_defender = _pick_closeout_defender(capped_context, shooter.player_id, primary_defender)
+        shot_origin = _player_floor_point(capped_context, shooter.player_id) or _court_point("wing")
+        shot_template = (
+            "corner_catch"
+            if basic_zone_label(shot_origin) == "corner_three"
+            else "flare_three"
+            if abs(shot_origin.x) >= 15.0
+            else "slot_three"
+        )
         pass_event = EventContext(
             event_type=EventType.PASS,
             actor_id=ball_handler.player_id,
@@ -306,7 +327,17 @@ def _prepare_transition_entry(
             realized_success=True,
             notes="transition_pitch_ahead",
         )
-        shot_result = resolve_catch_and_shoot(capped_context, shooter, shooter_defender, 0.68, rng)
+        shot_result = resolve_catch_and_shoot(
+            capped_context,
+            shooter,
+            shooter_defender,
+            0.68,
+            rng,
+            origin_point=shot_origin,
+            preferred_side="left" if shot_origin.x < 0 else "right",
+            defender_point=_defender_floor_point(capped_context, shooter_defender),
+            template=shot_template,
+        )
         outcome = _materialize_shot_result(
             context=capped_context,
             result=shot_result,
@@ -384,6 +415,11 @@ def _resolve_pnr_creation_state(
     on_ball_assignment = _find_assignment(context.defensive_assignments, play_call.primary_actor_id)
     on_ball_defender = _get_player(context, on_ball_assignment.defender_id if on_ball_assignment else None)
     help_defender = _pick_help_defender(context, exclude_ids={on_ball_defender.player_id if on_ball_defender else ""})
+    handler_origin = _coalesce_point(_player_floor_point(context, handler.player_id), _action_point_for_zone(play_call.target_zone))
+    screen_location = _blend_points(handler_origin, _action_point_for_zone(play_call.target_zone), weight=0.45)
+    on_ball_defender_point = _coalesce_point(_defender_floor_point(context, on_ball_defender), _pressure_point(handler_origin, None))
+    help_defender_point = _coalesce_point(_defender_floor_point(context, help_defender), _help_rotation_point(screen_location))
+    drive_target = _drive_target_from_origin(screen_location)
 
     screen_advantage = (screener.traits.screen_setting if screener else 8.0) - (on_ball_defender.traits.screen_nav if on_ball_defender else 10.0)
     advantage = _resolve_pnr_advantage(context, handler, screener, on_ball_defender, help_defender, coverage)
@@ -393,7 +429,7 @@ def _resolve_pnr_creation_state(
         actor_id=screener.player_id if screener else None,
         receiver_id=handler.player_id,
         defender_id=on_ball_defender.player_id if on_ball_defender else None,
-        location=_court_point("top"),
+        location=screen_location,
         success_probability=_clamp(0.5 + ((screen_advantage / 20.0) * 0.2), 0.25, 0.85),
         realized_success=True,
         notes=f"coverage={coverage.value};screen_advantage={screen_advantage:.2f}",
@@ -420,6 +456,32 @@ def _resolve_pnr_creation_state(
             "reset": -1 if coverage not in {DefensiveCoverage.ICE, DefensiveCoverage.HEDGE} else 1,
         },
     )
+    drive_bias = _clamp(
+        0.92
+        + max(0.0, advantage - 0.48) * 1.05
+        + (context.offensive_tactics.closeout_attack_rate * 0.12),
+        0.84,
+        1.72,
+    )
+    pullup_bias = _clamp(
+        0.92
+        + (0.18 if coverage == DefensiveCoverage.DROP and handler.traits.pullup_shooting >= 14.0 else 0.0)
+        - max(0.0, advantage - 0.58) * 0.42,
+        0.62,
+        1.24,
+    )
+    kickout_bias = _clamp(
+        0.82
+        + (0.16 if coverage in {DefensiveCoverage.ICE, DefensiveCoverage.HEDGE} else 0.0)
+        + max(0.0, advantage - 0.56) * 0.18,
+        0.72,
+        1.20,
+    )
+    reset_bias = _clamp(0.92 - max(0.0, advantage - 0.45) * 0.70, 0.32, 1.02)
+    branch_rates = _rescale_branch_probability(branch_rates, "drive", drive_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "pullup", pullup_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "kickout", kickout_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "reset", reset_bias)
     foul_scale = _foul_branch_scale(handler, on_ball_defender, advantage, switch_bonus=(0.12 if coverage == DefensiveCoverage.SWITCH else 0.0))
     branch_rates = _rescale_branch_probability(branch_rates, "foul", foul_scale)
     branch = _weighted_choice(rng, list(branch_rates.items()), default="pullup")
@@ -516,6 +578,10 @@ def _resolve_pnr_creation_state(
             possession_events=(screen_event,),
             paint_touched=True,
             help_committed=coverage == DefensiveCoverage.SWITCH,
+            action_origin=drive_target,
+            current_receiver_location=drive_target,
+            primary_defender_location=_pressure_point(drive_target, on_ball_defender_point),
+            help_defender_location=_help_rotation_point(drive_target),
         )
 
     if branch == "pullup":
@@ -533,15 +599,20 @@ def _resolve_pnr_creation_state(
             off_ball_states={},
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
             possession_events=(screen_event,),
+            action_origin=_blend_points(screen_location, drive_target, weight=0.42),
+            current_receiver_location=_blend_points(screen_location, drive_target, weight=0.42),
+            primary_defender_location=_pressure_point(_blend_points(screen_location, drive_target, weight=0.42), on_ball_defender_point),
+            help_defender_location=help_defender_point,
         )
 
     if branch == "roller" and screener is not None:
+        roller_point = _coalesce_point(_player_floor_point(context, screener.player_id), _help_rotation_point(drive_target))
         pass_event = EventContext(
             event_type=EventType.PASS,
             actor_id=handler.player_id,
             receiver_id=screener.player_id,
             defender_id=on_ball_defender.player_id if on_ball_defender else None,
-            location=_court_point("paint"),
+            location=roller_point,
             success_probability=_clamp(0.45 + ((handler.traits.pass_vision + handler.traits.pass_accuracy) / 40.0) * 0.35, 0.3, 0.9),
             realized_success=True,
             notes="pocket pass to roller",
@@ -572,6 +643,10 @@ def _resolve_pnr_creation_state(
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
             possession_events=(screen_event, pass_event),
             last_passer_id=handler.player_id,
+            action_origin=roller_point,
+            current_receiver_location=roller_point,
+            primary_defender_location=on_ball_defender_point,
+            help_defender_location=help_defender_point,
             terminal_result={
                 "kind": "shot",
                 "result": roller_result,
@@ -583,12 +658,13 @@ def _resolve_pnr_creation_state(
 
     if branch == "kickout":
         receiver = _best_shooter(context, exclude_ids={handler.player_id, screener.player_id if screener else ""}, rng=rng)
+        receiver_point = _coalesce_point(_player_floor_point(context, receiver.player_id), _action_point_for_zone(play_call.target_zone))
         pass_event = EventContext(
             event_type=EventType.PASS,
             actor_id=handler.player_id,
             receiver_id=receiver.player_id,
             defender_id=on_ball_defender.player_id if on_ball_defender else None,
-            location=_court_point("wing"),
+            location=receiver_point,
             success_probability=_clamp(0.5 + ((handler.traits.pass_vision + handler.traits.pass_accuracy) / 40.0) * 0.3, 0.35, 0.92),
             realized_success=True,
             notes="pnr kickout",
@@ -611,6 +687,10 @@ def _resolve_pnr_creation_state(
             last_passer_id=handler.player_id,
             paint_touched=True,
             help_committed=True,
+            action_origin=receiver_point,
+            current_receiver_location=receiver_point,
+            primary_defender_location=_coalesce_point(_defender_floor_point(context, shot_defender), _pressure_point(receiver_point, help_defender_point)),
+            help_defender_location=help_defender_point,
         )
 
     secondary = _secondary_creator(context, exclude_ids={handler.player_id, screener.player_id if screener else ""})
@@ -619,7 +699,7 @@ def _resolve_pnr_creation_state(
         actor_id=handler.player_id,
         receiver_id=secondary.player_id if secondary else handler.player_id,
         defender_id=on_ball_defender.player_id if on_ball_defender else None,
-        location=_court_point("top"),
+        location=screen_location,
         success_probability=0.88,
         realized_success=True,
         notes="pnr reset",
@@ -640,6 +720,10 @@ def _resolve_pnr_creation_state(
         clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 7.0)),
         possession_events=(screen_event, reset_pass),
         last_passer_id=handler.player_id,
+        action_origin=screen_location,
+        current_receiver_location=_coalesce_point(_player_floor_point(context, reset_actor.player_id), screen_location),
+        primary_defender_location=on_ball_defender_point,
+        help_defender_location=help_defender_point,
     )
 
 
@@ -702,6 +786,32 @@ def _resolve_double_drag_creation_state(
             "reset": 1 if coverage == DefensiveCoverage.HEDGE else -1,
         },
     )
+    turn_corner_bias = _clamp(
+        0.90
+        + max(0.0, advantage - 0.48) * 0.98
+        + (context.offensive_tactics.pick_and_roll_rate * 0.10),
+        0.82,
+        1.64,
+    )
+    middle_pullup_bias = _clamp(
+        0.90
+        + (0.14 if coverage == DefensiveCoverage.DROP and handler.traits.pullup_shooting >= 14.0 else 0.0)
+        - max(0.0, advantage - 0.56) * 0.36,
+        0.66,
+        1.18,
+    )
+    kickout_bias = _clamp(
+        0.86
+        + (0.18 if coverage == DefensiveCoverage.HEDGE else 0.0)
+        + max(0.0, advantage - 0.55) * 0.14,
+        0.76,
+        1.22,
+    )
+    reset_bias = _clamp(0.94 - max(0.0, advantage - 0.45) * 0.66, 0.36, 1.04)
+    branch_rates = _rescale_branch_probability(branch_rates, "turn_corner", turn_corner_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "middle_pullup", middle_pullup_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "kickout", kickout_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "reset", reset_bias)
     branch = _weighted_choice(rng, list(branch_rates.items()), default="turn_corner")
     lead_events = (first_screen, second_screen)
     active_screener = second_screener or first_screener
@@ -967,13 +1077,17 @@ def _resolve_iso_creation_state(
     on_ball_assignment = _find_assignment(context.defensive_assignments, play_call.primary_actor_id)
     on_ball_defender = _get_player(context, on_ball_assignment.defender_id if on_ball_assignment else None)
     help_defender = _pick_help_defender(context, exclude_ids={on_ball_defender.player_id if on_ball_defender else ""})
+    handler_origin = _coalesce_point(_player_floor_point(context, handler.player_id), _court_point("top"))
+    on_ball_defender_point = _coalesce_point(_defender_floor_point(context, on_ball_defender), _pressure_point(handler_origin, None))
+    help_defender_point = _coalesce_point(_defender_floor_point(context, help_defender), _help_rotation_point(handler_origin))
+    drive_target = _drive_target_from_origin(handler_origin)
     advantage = _resolve_iso_advantage(handler, on_ball_defender, help_defender)
 
     drive_event = EventContext(
         event_type=EventType.DRIVE,
         actor_id=handler.player_id,
         defender_id=on_ball_defender.player_id if on_ball_defender else None,
-        location=_court_point("top"),
+        location=handler_origin,
         success_probability=_clamp(0.45 + ((advantage - 0.5) * 0.4), 0.15, 0.9),
         realized_success=True,
         notes=f"coverage={coverage.value};iso_advantage={advantage:.3f}",
@@ -1000,6 +1114,40 @@ def _resolve_iso_creation_state(
             "reset": -1,
         },
     )
+    drive_bias = _clamp(
+        0.96
+        + max(0.0, advantage - 0.45) * 1.10
+        + (context.offensive_tactics.closeout_attack_rate * 0.10),
+        0.90,
+        1.86,
+    )
+    kickout_bias = _clamp(
+        0.80
+        + max(0.0, advantage - 0.55) * 0.24
+        + (0.08 if help_defender is not None else 0.0),
+        0.70,
+        1.16,
+    )
+    reset_bias = _clamp(0.92 - max(0.0, advantage - 0.42) * 0.74, 0.28, 1.00)
+    midrange_bias = _clamp(
+        0.90
+        + (0.12 if 11.0 <= handler.traits.pullup_shooting < 15.0 else 0.0)
+        - max(0.0, advantage - 0.56) * 0.34,
+        0.70,
+        1.12,
+    )
+    three_bias = _clamp(
+        0.90
+        + (0.14 if handler.traits.pullup_shooting >= 15.0 else 0.0)
+        - max(0.0, advantage - 0.58) * 0.38,
+        0.68,
+        1.16,
+    )
+    branch_rates = _rescale_branch_probability(branch_rates, "drive", drive_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "kickout", kickout_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "reset", reset_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "midrange", midrange_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "three", three_bias)
     branch_rates = _rescale_branch_probability(branch_rates, "foul", _foul_branch_scale(handler, on_ball_defender, advantage))
     branch = _weighted_choice(rng, list(branch_rates.items()), default="drive")
 
@@ -1093,9 +1241,15 @@ def _resolve_iso_creation_state(
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
             possession_events=(drive_event,),
             paint_touched=True,
+            help_committed=help_defender is not None,
+            action_origin=drive_target,
+            current_receiver_location=drive_target,
+            primary_defender_location=_pressure_point(drive_target, on_ball_defender_point),
+            help_defender_location=help_defender_point,
         )
 
     if branch in {"midrange", "three"}:
+        pullup_origin = _blend_points(handler_origin, drive_target, weight=0.34)
         return ProgressionState(
             shot_clock_remaining=max(0.0, context.clock.shot_clock - 5.0),
             entry_type=EntryType.NORMAL,
@@ -1110,17 +1264,22 @@ def _resolve_iso_creation_state(
             off_ball_states={},
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
             possession_events=(drive_event,),
+            action_origin=pullup_origin,
+            current_receiver_location=pullup_origin,
+            primary_defender_location=_pressure_point(pullup_origin, on_ball_defender_point),
+            help_defender_location=help_defender_point,
         )
 
     if branch == "kickout":
         receiver = _best_shooter(context, exclude_ids={handler.player_id}, rng=rng)
         shot_defender = _pick_closeout_defender(context, receiver.player_id, on_ball_defender)
+        receiver_point = _coalesce_point(_player_floor_point(context, receiver.player_id), _court_point("wing"))
         pass_event = EventContext(
             event_type=EventType.PASS,
             actor_id=handler.player_id,
             receiver_id=receiver.player_id,
             defender_id=help_defender.player_id if help_defender else None,
-            location=_court_point("wing"),
+            location=receiver_point,
             success_probability=0.87,
             realized_success=True,
             notes="iso kickout",
@@ -1142,6 +1301,10 @@ def _resolve_iso_creation_state(
             last_passer_id=handler.player_id,
             paint_touched=True,
             help_committed=True,
+            action_origin=receiver_point,
+            current_receiver_location=receiver_point,
+            primary_defender_location=_coalesce_point(_defender_floor_point(context, shot_defender), _pressure_point(receiver_point, help_defender_point)),
+            help_defender_location=help_defender_point,
         )
 
     secondary = _secondary_creator(context, exclude_ids={handler.player_id})
@@ -1171,6 +1334,10 @@ def _resolve_iso_creation_state(
         clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 7.0)),
         possession_events=(drive_event, reset_pass),
         last_passer_id=handler.player_id,
+        action_origin=handler_origin,
+        current_receiver_location=_coalesce_point(_player_floor_point(context, bailout_actor.player_id), handler_origin),
+        primary_defender_location=on_ball_defender_point,
+        help_defender_location=help_defender_point,
     )
 
 
@@ -1187,12 +1354,17 @@ def _resolve_handoff_creation_state(
     on_ball_assignment = _find_assignment(context.defensive_assignments, receiver.player_id if receiver else "")
     on_ball_defender = _get_player(context, on_ball_assignment.defender_id if on_ball_assignment else None)
     help_defender = _pick_help_defender(context, exclude_ids={on_ball_defender.player_id if on_ball_defender else ""})
+    receiver_origin = _coalesce_point(_player_floor_point(context, receiver.player_id if receiver else None), _action_point_for_zone(play_call.target_zone or CourtZone.RIGHT_WING))
+    handoff_location = _blend_points(receiver_origin, _action_point_for_zone(play_call.target_zone or CourtZone.RIGHT_WING), weight=0.35)
+    on_ball_defender_point = _coalesce_point(_defender_floor_point(context, on_ball_defender), _pressure_point(receiver_origin, None))
+    help_defender_point = _coalesce_point(_defender_floor_point(context, help_defender), _help_rotation_point(handoff_location))
+    turn_corner_target = _drive_target_from_origin(handoff_location)
     handoff_event = EventContext(
         event_type=EventType.HANDOFF,
         actor_id=handoff_big.player_id if handoff_big else None,
         receiver_id=receiver.player_id if receiver else None,
         defender_id=on_ball_defender.player_id if on_ball_defender else None,
-        location=_court_point("wing"),
+        location=handoff_location,
         success_probability=_clamp(0.74 + (((handoff_big.traits.screen_setting if handoff_big else 10.0) - 10.0) / 40.0), 0.58, 0.90),
         realized_success=True,
         notes=f"coverage={coverage.value};handoff_flow",
@@ -1219,6 +1391,32 @@ def _resolve_handoff_creation_state(
             "big_short_roll": 1 if coverage == DefensiveCoverage.HEDGE else 0,
         },
     )
+    turn_corner_bias = _clamp(
+        0.92
+        + max(0.0, advantage - 0.48) * 1.00
+        + (context.offensive_tactics.closeout_attack_rate * 0.08),
+        0.84,
+        1.72,
+    )
+    snake_pullup_bias = _clamp(
+        0.92
+        + (0.16 if coverage == DefensiveCoverage.DROP and receiver.traits.pullup_shooting >= 14.0 else 0.0)
+        - max(0.0, advantage - 0.56) * 0.40,
+        0.64,
+        1.22,
+    )
+    kickout_bias = _clamp(
+        0.84
+        + (0.18 if coverage in {DefensiveCoverage.ICE, DefensiveCoverage.HEDGE} else 0.0)
+        + max(0.0, advantage - 0.56) * 0.16,
+        0.74,
+        1.20,
+    )
+    reset_bias = _clamp(0.94 - max(0.0, advantage - 0.46) * 0.72, 0.32, 1.04)
+    branch_rates = _rescale_branch_probability(branch_rates, "turn_corner", turn_corner_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "snake_pullup", snake_pullup_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "kickout", kickout_bias)
+    branch_rates = _rescale_branch_probability(branch_rates, "flip_reset", reset_bias)
     branch = _weighted_choice(rng, list(branch_rates.items()), default="turn_corner")
 
     if branch == "turnover":
@@ -1304,6 +1502,10 @@ def _resolve_handoff_creation_state(
             off_ball_states={},
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.0)),
             possession_events=(handoff_event,),
+            action_origin=_blend_points(handoff_location, turn_corner_target, weight=0.40),
+            current_receiver_location=_blend_points(handoff_location, turn_corner_target, weight=0.40),
+            primary_defender_location=_pressure_point(_blend_points(handoff_location, turn_corner_target, weight=0.40), on_ball_defender_point),
+            help_defender_location=help_defender_point,
         )
 
     if branch == "big_short_roll" and handoff_big is not None:
@@ -1343,6 +1545,10 @@ def _resolve_handoff_creation_state(
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
             possession_events=(handoff_event, pass_event),
             last_passer_id=receiver.player_id,
+            action_origin=_coalesce_point(_player_floor_point(context, handoff_big.player_id), _help_rotation_point(turn_corner_target)),
+            current_receiver_location=_coalesce_point(_player_floor_point(context, handoff_big.player_id), _help_rotation_point(turn_corner_target)),
+            primary_defender_location=on_ball_defender_point,
+            help_defender_location=help_defender_point,
             terminal_result={
                 "kind": "shot",
                 "result": roller_result,
@@ -1354,12 +1560,13 @@ def _resolve_handoff_creation_state(
 
     if branch == "kickout":
         wing = _best_shooter(context, exclude_ids={receiver.player_id, handoff_big.player_id if handoff_big else ""}, rng=rng)
+        wing_point = _coalesce_point(_player_floor_point(context, wing.player_id), _action_point_for_zone(play_call.target_zone or CourtZone.RIGHT_WING))
         pass_event = EventContext(
             event_type=EventType.PASS,
             actor_id=receiver.player_id,
             receiver_id=wing.player_id,
             defender_id=help_defender.player_id if help_defender else None,
-            location=_court_point("wing"),
+            location=wing_point,
             success_probability=0.86,
             realized_success=True,
             notes="handoff kickout",
@@ -1380,9 +1587,13 @@ def _resolve_handoff_creation_state(
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 5.5)),
             possession_events=(handoff_event, pass_event),
             last_passer_id=receiver.player_id,
-        paint_touched=coverage != DefensiveCoverage.ICE,
-        help_committed=True,
-    )
+            paint_touched=coverage != DefensiveCoverage.ICE,
+            help_committed=True,
+            action_origin=wing_point,
+            current_receiver_location=wing_point,
+            primary_defender_location=_coalesce_point(_defender_floor_point(context, closeout_defender), _pressure_point(wing_point, help_defender_point)),
+            help_defender_location=help_defender_point,
+        )
 
     if branch == "flip_reset":
         secondary = _secondary_creator(context, exclude_ids={receiver.player_id}) or receiver
@@ -1411,6 +1622,10 @@ def _resolve_handoff_creation_state(
             clock_urgency=_clock_urgency(max(0.0, context.clock.shot_clock - 6.0)),
             possession_events=(handoff_event, reset_pass),
             last_passer_id=receiver.player_id,
+            action_origin=handoff_location,
+            current_receiver_location=_coalesce_point(_player_floor_point(context, secondary.player_id), handoff_location),
+            primary_defender_location=on_ball_defender_point,
+            help_defender_location=help_defender_point,
         )
 
     return ProgressionState(
@@ -1429,6 +1644,10 @@ def _resolve_handoff_creation_state(
         possession_events=(handoff_event,),
         paint_touched=True,
         help_committed=coverage != DefensiveCoverage.ICE,
+        action_origin=turn_corner_target,
+        current_receiver_location=turn_corner_target,
+        primary_defender_location=_pressure_point(turn_corner_target, on_ball_defender_point),
+        help_defender_location=_help_rotation_point(turn_corner_target),
     )
 
 
@@ -1438,43 +1657,68 @@ def resolve_drive_attempt(
     primary_defender: PlayerSimProfile | None,
     help_defender: PlayerSimProfile | None,
     rng: random.Random,
+    *,
+    attack_origin: CourtPoint | None = None,
+    primary_defender_point: CourtPoint | None = None,
+    help_defender_point: CourtPoint | None = None,
+    clock_urgency: float | None = None,
+    help_committed: bool | None = None,
 ) -> dict[str, object]:
+    urgency = _clamp(clock_urgency if clock_urgency is not None else _clock_urgency(context.clock.shot_clock), 0.0, 1.0)
+    help_loaded = bool(help_committed) or help_defender is not None
+    help_window = _clamp(
+        (0.92 - (urgency * 0.32))
+        + (0.12 if help_loaded else -0.06)
+        + (0.10 if context.coverage in {DefensiveCoverage.DROP, DefensiveCoverage.HEDGE, DefensiveCoverage.ICE} else -0.04),
+        0.18,
+        1.12,
+    )
     off_score = weighted_sum(
         [
-            (attacker.traits.separation, 0.25),
-            (attacker.traits.burst, 0.30),
-            (attacker.traits.finishing, 0.15),
-            (attacker.traits.decision_making, 0.10),
-            (attacker.traits.ball_security, 0.10),
-            (attacker.traits.foul_drawing, 0.10),
+            (attacker.traits.separation, 0.46),
+            (attacker.traits.ball_security, 0.18),
+            (attacker.traits.burst, 0.18),
+            (attacker.traits.speed, 0.08),
+            (attacker.traits.decision_making, 0.05),
+            (attacker.traits.foul_drawing, 0.05),
         ]
     )
     def_score = weighted_sum(
         [
-            (primary_defender.traits.containment if primary_defender else 10.0, 0.35),
-            (primary_defender.traits.foul_discipline if primary_defender else 10.0, 0.15),
-            (help_defender.traits.interior_def if help_defender else 10.0, 0.20),
-            (help_defender.traits.rim_protect if help_defender else 10.0, 0.20),
-            (primary_defender.traits.steal_pressure if primary_defender else 10.0, 0.10),
+            (primary_defender.traits.containment if primary_defender else 10.0, 0.34),
+            (primary_defender.traits.speed if primary_defender else 10.0, 0.14),
+            (primary_defender.traits.burst if primary_defender else 10.0, 0.10),
+            (primary_defender.traits.reach if primary_defender else 10.0, 0.06),
+            ((help_defender.traits.help_rotation if help_defender else 10.0) * help_window, 0.12),
+            ((help_defender.traits.interior_def if help_defender else 10.0) * help_window, 0.12),
+            ((help_defender.traits.rim_protect if help_defender else 10.0) * help_window, 0.08),
+            (primary_defender.traits.steal_pressure if primary_defender else 10.0, 0.04),
         ]
     )
-    drive_advantage = sigmoid_normalize(off_score - def_score)
+    lane_geometry_bonus = 0.04 if attack_origin and abs(attack_origin.x) <= 6.5 else -0.02 if attack_origin and abs(attack_origin.x) >= 16.0 else 0.0
+    coverage_modifier = 0.05 if context.coverage in {DefensiveCoverage.SWITCH, DefensiveCoverage.BLITZ} else -0.03 if context.coverage == DefensiveCoverage.DROP else 0.0
+    drive_advantage = sigmoid_normalize((off_score - def_score) + lane_geometry_bonus + coverage_modifier)
+    passing_window = _clamp(
+        ((attacker.traits.pass_vision * 0.55) + (attacker.traits.decision_making * 0.45) - 10.0) / 10.0,
+        0.0,
+        1.0,
+    )
     branch_rates = adjust_branches(
         base_rates={
-            "rim_clean": 0.32,
-            "rim_contested": 0.26,
-            "foul": 0.22,
-            "kickout": 0.08,
+            "rim_clean": 0.28 - (help_window * 0.08),
+            "rim_contested": 0.24 + (help_window * 0.06),
+            "foul": 0.14 + (help_window * 0.08),
+            "kickout": 0.06 + (help_window * 0.12) + (passing_window * 0.12),
             "strip": 0.08,
-            "charge": 0.04,
+            "charge": 0.03,
             "bail_pullup": 0.02,
         },
         advantage=drive_advantage,
         branch_effects={
             "rim_clean": 1,
             "rim_contested": 0,
-            "foul": 1,
-            "kickout": -1,
+            "foul": 1 if help_window > 0.55 else 0,
+            "kickout": 1 if help_window > 0.45 else 0,
             "strip": -1,
             "charge": -1,
             "bail_pullup": -1,
@@ -1483,14 +1727,24 @@ def resolve_drive_attempt(
     branch_rates = _rescale_branch_probability(
         branch_rates,
         "foul",
-        _foul_branch_scale(attacker, primary_defender, drive_advantage),
+        _foul_branch_scale(attacker, primary_defender, drive_advantage) * (0.82 + (help_window * 0.26)),
     )
+    charge_risk = _clamp(
+        0.02
+        + ((primary_defender.traits.foul_discipline if primary_defender else 10.0) - 10.0) / 120.0
+        + (max(0.0, 0.58 - drive_advantage) * 0.08)
+        + ((20.0 - attacker.traits.decision_making) / 20.0) * 0.06,
+        0.01,
+        0.16,
+    )
+    branch_rates = _rescale_branch_probability(branch_rates, "charge", charge_risk / max(branch_rates.get("charge", 0.01), 0.01))
     branch = _weighted_choice(rng, list(branch_rates.items()), default="rim_contested")
+    drive_location = attack_origin or _player_floor_point(context, attacker.player_id) or _court_point("paint")
     drive_event = EventContext(
         event_type=EventType.DRIVE,
         actor_id=attacker.player_id,
         defender_id=primary_defender.player_id if primary_defender else None,
-        location=_court_point("paint"),
+        location=drive_location,
         success_probability=_clamp(branch_rates.get(branch, 0.3), 0.05, 0.95),
         realized_success=branch not in {"strip", "charge"},
         notes=f"drive_branch={branch};advantage={drive_advantage:.3f}",
@@ -1504,12 +1758,12 @@ def resolve_drive_attempt(
         foul_event = EventContext(
             event_type=EventType.FOUL,
             actor_id=attacker.player_id,
-            defender_id=primary_defender.player_id if primary_defender else None,
+            defender_id=(help_defender.player_id if help_window >= 0.55 and help_defender else primary_defender.player_id if primary_defender else None),
             location=_court_point("paint"),
             foul_drawn=True,
             success_probability=branch_rates["foul"],
             realized_success=True,
-            notes="drive foul",
+            notes=f"drive shooting foul help_window={help_window:.2f}",
         )
         foul_type = _choose_drive_foul_type(attacker, drive_advantage, rng)
         shot_type = ShotType.RIM if foul_type == FoulOutcomeType.AND_ONE else None
@@ -1521,7 +1775,7 @@ def resolve_drive_attempt(
             actor_id=attacker.player_id,
             receiver_id=receiver.player_id,
             defender_id=help_defender.player_id if help_defender else None,
-            location=_court_point("wing"),
+            location=_player_floor_point(context, receiver.player_id) or _court_point("wing"),
             success_probability=0.86,
             realized_success=True,
             notes="drive kickout",
@@ -1536,7 +1790,17 @@ def resolve_drive_attempt(
             "defender": shot_defender,
         }
     if branch == "bail_pullup":
-        shot_result = resolve_pullup(attacker, primary_defender, DefensiveCoverage.DROP, off_screen=False, shot_type=ShotType.MIDRANGE)
+        shot_result = resolve_pullup(
+            attacker,
+            primary_defender,
+            DefensiveCoverage.DROP,
+            off_screen=False,
+            shot_type=ShotType.MIDRANGE,
+            rng=rng,
+            origin_point=drive_event.location,
+            defender_point=primary_defender_point or _defender_floor_point(context, primary_defender),
+            template="handoff_pullup",
+        )
         return {"result_type": "nested_shot", "events": (drive_event,), "result": shot_result, "assister_id": None, "default_off_rebounder": attacker, "defender": primary_defender}
 
     shot_type = ShotType.RIM if branch == "rim_clean" else ShotType.PAINT
@@ -1547,7 +1811,15 @@ def resolve_drive_attempt(
         drive_advantage,
         base=0.64 + contest_boost * 0.04,
     )
-    return {"result_type": "shot", "events": (drive_event,), "shooter": attacker, "shot_type": shot_type, "shot_quality": shot_quality}
+    return {
+        "result_type": "shot",
+        "events": (drive_event,),
+        "shooter": attacker,
+        "shot_type": shot_type,
+        "shot_quality": shot_quality,
+        "shot_origin": drive_location,
+        "defender_point": help_defender_point or primary_defender_point,
+    }
 
 
 def resolve_pullup(
@@ -1557,7 +1829,13 @@ def resolve_pullup(
     *,
     off_screen: bool,
     shot_type: ShotType | None = None,
+    rng: random.Random | None = None,
+    origin_point: CourtPoint | None = None,
+    preferred_side: str | None = None,
+    defender_point: CourtPoint | None = None,
+    template: str | None = None,
 ) -> dict[str, object]:
+    rng = rng or random.Random()
     off_score = weighted_sum([(shooter.traits.pullup_shooting, 0.50), (shooter.traits.separation, 0.30), (shooter.traits.burst, 0.20)])
     closeout_value = min(defender.traits.closeout if defender else 10.0, 20.0)
     if off_screen:
@@ -1575,18 +1853,49 @@ def resolve_pullup(
     def_score = weighted_sum(def_pairs)
     quality = sigmoid_normalize(off_score - def_score)
     resolved_shot_type = shot_type or (ShotType.ABOVE_BREAK_THREE if shooter.traits.pullup_shooting >= 12.0 else ShotType.MIDRANGE)
-    base = 0.39 if resolved_shot_type == ShotType.ABOVE_BREAK_THREE else 0.43
+    side_preference = preferred_side or "center"
+    if side_preference == "center":
+        if origin_point is not None:
+            if origin_point.x < -4.0:
+                side_preference = "left"
+            elif origin_point.x > 4.0:
+                side_preference = "right"
+        elif coverage == DefensiveCoverage.ICE:
+            side_preference = "left"
+        elif coverage == DefensiveCoverage.HEDGE:
+            side_preference = "right"
+    shot_context = build_shot_context(
+        resolved_shot_type,
+        shot_style="pullup",
+        shooter_skill=shooter.traits.pullup_shooting,
+        defender_distance_feet=contest_distance_from_traits(
+            coverage_gap=(quality - 0.5) * 2.0,
+            defender_closeout=closeout_value,
+            defender_reach=defender.traits.reach if defender else 10.0,
+            off_screen=off_screen,
+        ),
+        advantage=quality,
+        rng=rng,
+        preferred_side=side_preference,
+        origin=origin_point,
+        defender_point=defender_point,
+        template=template,
+    )
+    resolved_event_shot_type = shot_type_from_point(shot_context.point)
     event = EventContext(
         event_type=EventType.SHOT,
         actor_id=shooter.player_id,
         defender_id=defender.player_id if defender else None,
-        location=_court_point("three" if resolved_shot_type == ShotType.ABOVE_BREAK_THREE else "midrange"),
-        shot_type=resolved_shot_type,
-        success_probability=_shot_quality_from_advantage(off_score, def_score, quality, base=base),
+        location=shot_context.point,
+        shot_type=resolved_event_shot_type,
+        shot_distance_feet=shot_context.distance_feet,
+        defender_distance_feet=shot_context.defender_distance_feet,
+        shot_zone_label=shot_context.zone_label,
+        success_probability=shot_context.make_probability,
         realized_success=None,
-        notes=f"pullup off_screen={off_screen};coverage={coverage.value}",
+        notes=f"pullup off_screen={off_screen};coverage={coverage.value};zone={shot_context.zone_label};distance={shot_context.distance_feet:.1f}",
     )
-    return {"result_type": "shot", "events": (event,), "shooter": shooter, "shot_type": resolved_shot_type, "shot_quality": event.success_probability}
+    return {"result_type": "shot", "events": (event,), "shooter": shooter, "shot_type": resolved_event_shot_type, "shot_quality": event.success_probability}
 
 
 def resolve_catch_and_shoot(
@@ -1595,6 +1904,11 @@ def resolve_catch_and_shoot(
     defender: PlayerSimProfile | None,
     upstream_advantage: float,
     rng: random.Random,
+    *,
+    origin_point: CourtPoint | None = None,
+    preferred_side: str | None = None,
+    defender_point: CourtPoint | None = None,
+    template: str | None = None,
 ) -> dict[str, object]:
     off_score = weighted_sum([(shooter.traits.catch_shoot, 0.60), (10.0 + (upstream_advantage - 0.5) * 10.0, 0.25), (10.0, 0.15)])
     def_score = weighted_sum(
@@ -1606,18 +1920,54 @@ def resolve_catch_and_shoot(
         ]
     )
     quality = sigmoid_normalize(off_score - def_score)
-    shot_type = ShotType.CORNER_THREE if rng.random() < _corner_three_probability(context, shooter, upstream_advantage) else ShotType.ABOVE_BREAK_THREE
+    origin_zone_label = basic_zone_label(origin_point) if origin_point is not None else None
+    if template == "corner_catch" or origin_zone_label == "corner_three":
+        shot_type = ShotType.CORNER_THREE
+    elif template in {"flare_three", "slot_three"} or origin_zone_label == "above_break_three":
+        shot_type = ShotType.ABOVE_BREAK_THREE
+    else:
+        shot_type = ShotType.CORNER_THREE if rng.random() < _corner_three_probability(context, shooter, upstream_advantage) else ShotType.ABOVE_BREAK_THREE
+    side_preference = preferred_side or (
+        "left" if origin_point and origin_point.x < -4.0 else
+        "right" if origin_point and origin_point.x > 4.0 else
+        "center"
+    )
+    shot_context = build_shot_context(
+        shot_type,
+        shot_style="catch",
+        shooter_skill=shooter.traits.catch_shoot,
+        defender_distance_feet=contest_distance_from_traits(
+            coverage_gap=(quality - 0.5) * 2.0,
+            defender_closeout=min(defender.traits.closeout if defender else 10.0, 20.0),
+            defender_reach=defender.traits.reach if defender else 10.0,
+            catch_and_shoot=True,
+        ),
+        advantage=quality + ((upstream_advantage - 0.5) * 0.3),
+        rng=rng,
+        preferred_side=(
+            "left" if shot_type == ShotType.CORNER_THREE and side_preference == "center" and rng.random() < 0.5 else
+            "right" if shot_type == ShotType.CORNER_THREE and side_preference == "center" else
+            side_preference
+        ),
+        origin=origin_point,
+        defender_point=defender_point,
+        template=template,
+    )
+    resolved_event_shot_type = shot_type_from_point(shot_context.point)
     event = EventContext(
         event_type=EventType.SHOT,
         actor_id=shooter.player_id,
         defender_id=defender.player_id if defender else None,
-        location=_court_point("corner" if shot_type == ShotType.CORNER_THREE else "three"),
-        shot_type=shot_type,
-        success_probability=_shot_quality_from_advantage(off_score, def_score, quality, base=0.375),
+        location=shot_context.point,
+        shot_type=resolved_event_shot_type,
+        shot_distance_feet=shot_context.distance_feet,
+        defender_distance_feet=shot_context.defender_distance_feet,
+        shot_zone_label=shot_context.zone_label,
+        success_probability=shot_context.make_probability,
         realized_success=None,
-        notes="catch_and_shoot",
+        notes=f"catch_and_shoot zone={shot_context.zone_label};distance={shot_context.distance_feet:.1f}",
     )
-    return {"result_type": "shot", "events": (event,), "shooter": shooter, "shot_type": shot_type, "shot_quality": event.success_probability}
+    return {"result_type": "shot", "events": (event,), "shooter": shooter, "shot_type": resolved_event_shot_type, "shot_quality": event.success_probability}
 
 
 def resolve_rebound(
@@ -1632,18 +1982,18 @@ def resolve_rebound(
     crash_candidates = sorted(
         offensive_players,
         key=lambda player: (
-            player.traits.oreb + (0.35 * player.traits.size) + (0.15 * player.traits.reach),
+            player.traits.rebounding + (0.35 * player.traits.size) + (0.15 * player.traits.reach),
             player.player_id != shooter.player_id,
         ),
         reverse=True,
     )
     crashers = crash_candidates[:3]
-    boxers = sorted(defensive_players, key=lambda player: (player.traits.dreb, player.traits.size), reverse=True)[:4]
+    boxers = sorted(defensive_players, key=lambda player: (player.traits.rebounding, player.traits.size), reverse=True)[:4]
     rim_protector = max(defensive_players, key=lambda player: player.traits.rim_protect, default=None)
 
     crash_glass_modifier = 0.95 + (context.offensive_tactics.crash_glass_rate * 1.45)
-    off_score = sum(player.traits.oreb + (0.15 * player.traits.size) for player in crashers) * crash_glass_modifier
-    def_score = sum(player.traits.dreb + (0.15 * player.traits.size) for player in boxers)
+    off_score = sum(player.traits.rebounding + (0.15 * player.traits.size) for player in crashers) * crash_glass_modifier
+    def_score = sum(player.traits.rebounding + (0.15 * player.traits.size) for player in boxers)
     if rim_protector is not None:
         def_score += rim_protector.traits.rim_protect * 0.3
     location_modifier = {
@@ -1661,7 +2011,7 @@ def resolve_rebound(
         rebounder = _weighted_choice(
             rng,
             [
-                (player, max(0.1, player.traits.oreb + (0.2 * player.traits.size)))
+                (player, max(0.1, player.traits.rebounding + (0.2 * player.traits.size)))
                 for player in crashers
             ],
             default=default_off_rebounder,
@@ -1670,7 +2020,7 @@ def resolve_rebound(
         rebounder = _weighted_choice(
             rng,
             [
-                (player, max(0.1, player.traits.dreb + (0.2 * player.traits.size)))
+                (player, max(0.1, player.traits.rebounding + (0.2 * player.traits.size)))
                 for player in boxers
             ],
             default=rim_protector,
@@ -1835,16 +2185,39 @@ def _second_side_loop(
     receiver = _get_player(context, state.current_receiver_id or state.ball_handler_id)
     shot_defender = _get_player(context, state.primary_defender_id)
     help_defender = _get_player(context, state.help_defender_id)
+    receiver_origin = state.current_receiver_location or _player_floor_point(context, state.current_receiver_id or state.ball_handler_id) or _court_point("wing")
+    shot_defender_point = state.primary_defender_location or _defender_floor_point(context, shot_defender)
+    help_defender_point = state.help_defender_location or _defender_floor_point(context, help_defender)
     if receiver is None:
         fallback = _get_player(context, state.ball_handler_id)
-        return resolve_pullup(fallback, shot_defender, state.coverage, off_screen=False, shot_type=ShotType.MIDRANGE)
+        return resolve_pullup(
+            fallback,
+            shot_defender,
+            state.coverage,
+            off_screen=False,
+            shot_type=ShotType.MIDRANGE,
+            rng=rng,
+            origin_point=state.action_origin or _player_floor_point(context, state.ball_handler_id) or _court_point("top"),
+            defender_point=shot_defender_point,
+            template=_shot_template_for_context(family=context.play_call.family if context.play_call else None, shot_type=ShotType.MIDRANGE),
+        )
 
     if state.shot_clock_remaining <= 4.0 or state.swing_count >= 3:
         bailout_type = ShotType.ABOVE_BREAK_THREE if receiver.traits.pullup_shooting >= 12.0 else ShotType.MIDRANGE
         return {
             "result_type": "nested_shot",
             "events": (),
-            "result": resolve_pullup(receiver, shot_defender, state.coverage, off_screen=False, shot_type=bailout_type),
+            "result": resolve_pullup(
+                receiver,
+                shot_defender,
+                state.coverage,
+                off_screen=False,
+                shot_type=bailout_type,
+                rng=rng,
+                origin_point=receiver_origin,
+                defender_point=shot_defender_point,
+                template=_shot_template_for_context(family=context.play_call.family if context.play_call else None, shot_type=bailout_type),
+            ),
             "assister_id": None,
             "default_off_rebounder": receiver,
             "defender": shot_defender,
@@ -1924,13 +2297,27 @@ def _second_side_loop(
         default="shoot",
     )
     if decision == "shoot":
-        return resolve_catch_and_shoot(context, receiver, shot_defender, 0.5 + (openness / 40.0), rng)
+        return resolve_catch_and_shoot(
+            context,
+            receiver,
+            shot_defender,
+            0.5 + (openness / 40.0),
+            rng,
+            origin_point=receiver_origin,
+            preferred_side="left" if receiver_origin.x < 0 else "right",
+            defender_point=shot_defender_point,
+            template=_shot_template_for_context(
+                family=context.play_call.family if context.play_call else None,
+                shot_type=ShotType.CORNER_THREE if state.off_ball_states.get(receiver.player_id) == "corner_drift" else ShotType.ABOVE_BREAK_THREE,
+                off_ball_state=state.off_ball_states.get(receiver.player_id),
+            ),
+        )
     if decision == "attack":
         closeout_event = EventContext(
             event_type=EventType.DRIVE,
             actor_id=receiver.player_id,
             defender_id=shot_defender.player_id if shot_defender else None,
-            location=_court_point("wing"),
+            location=receiver_origin,
             success_probability=_clamp(0.48 + (openness / 20.0) * 0.14 + (context.offensive_tactics.closeout_attack_rate * 0.12), 0.28, 0.88),
             realized_success=True,
             notes="attack_closeout",
@@ -1938,7 +2325,18 @@ def _second_side_loop(
         return {
             "result_type": "nested_action",
             "events": (closeout_event,),
-            "result": resolve_drive_attempt(context, receiver, shot_defender, help_defender, rng),
+            "result": resolve_drive_attempt(
+                context,
+                receiver,
+                shot_defender,
+                help_defender,
+                rng,
+                attack_origin=_drive_target_from_origin(receiver_origin),
+                primary_defender_point=shot_defender_point,
+                help_defender_point=help_defender_point,
+                clock_urgency=state.clock_urgency,
+                help_committed=state.help_committed,
+            ),
             "assister_id": state.last_passer_id,
             "default_off_rebounder": receiver,
             "defender": shot_defender,
@@ -2060,6 +2458,13 @@ def _second_side_loop(
                 state.coverage,
                 off_screen=False,
                 shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
+                rng=rng,
+                origin_point=_player_floor_point(context, secondary.player_id) or _court_point("top"),
+                defender_point=_defender_floor_point(context, secondary_defender),
+                template=_shot_template_for_context(
+                    family=context.play_call.family if context.play_call else None,
+                    shot_type=ShotType.ABOVE_BREAK_THREE if secondary.traits.pullup_shooting >= 14.0 else ShotType.MIDRANGE,
+                ),
             ),
             "assister_id": None,
             "default_off_rebounder": receiver,
@@ -2068,7 +2473,20 @@ def _second_side_loop(
 
     eligible = _eligible_receivers(context, state, {receiver.player_id, state.last_passer_id or ""})
     if not eligible:
-        return resolve_catch_and_shoot(context, receiver, shot_defender, 0.5 + (openness / 40.0), rng)
+        return resolve_catch_and_shoot(
+            context,
+            receiver,
+            shot_defender,
+            0.5 + (openness / 40.0),
+            rng,
+            origin_point=receiver_origin,
+            defender_point=shot_defender_point,
+            template=_shot_template_for_context(
+                family=context.play_call.family if context.play_call else None,
+                shot_type=ShotType.CORNER_THREE if state.off_ball_states.get(receiver.player_id) == "corner_drift" else ShotType.ABOVE_BREAK_THREE,
+                off_ball_state=state.off_ball_states.get(receiver.player_id),
+            ),
+        )
     weighted = []
     for player in eligible:
         off_ball_state = state.off_ball_states.get(player.player_id, "spotted_up")
@@ -2111,6 +2529,10 @@ def _second_side_loop(
         paint_touched=state.paint_touched,
         help_committed=state.help_committed,
         swing_count=state.swing_count + 1,
+        action_origin=_coalesce_point(_player_floor_point(context, next_receiver.player_id), receiver_origin),
+        current_receiver_location=_coalesce_point(_player_floor_point(context, next_receiver.player_id), receiver_origin),
+        primary_defender_location=_coalesce_point(_defender_floor_point(context, next_defender), _pressure_point(_coalesce_point(_player_floor_point(context, next_receiver.player_id), receiver_origin), shot_defender_point)),
+        help_defender_location=help_defender_point,
     )
     return {
         "result_type": "nested_action",
@@ -2146,7 +2568,18 @@ def _resolve_progression_state(
         )
 
     if state.advantage_state == AdvantageState.PAINT_TOUCH:
-        drive_result = resolve_drive_attempt(context, current_actor, primary_defender, help_defender, rng)
+        drive_result = resolve_drive_attempt(
+            context,
+            current_actor,
+            primary_defender,
+            help_defender,
+            rng,
+            attack_origin=state.action_origin or state.current_receiver_location,
+            primary_defender_point=state.primary_defender_location,
+            help_defender_point=state.help_defender_location,
+            clock_urgency=state.clock_urgency,
+            help_committed=state.help_committed,
+        )
         return _materialize_action_result(
             context=context,
             result=drive_result,
@@ -2161,7 +2594,21 @@ def _resolve_progression_state(
         shot_type = ShotType.ABOVE_BREAK_THREE if current_actor.traits.pullup_shooting >= 13.0 else ShotType.MIDRANGE
         if state.shot_clock_remaining <= 5.0 and current_actor.traits.pullup_shooting < 12.0:
             shot_type = ShotType.MIDRANGE
-        pullup_result = resolve_pullup(current_actor, primary_defender, state.coverage, off_screen=(screener is not None), shot_type=shot_type)
+        pullup_result = resolve_pullup(
+            current_actor,
+            primary_defender,
+            state.coverage,
+            off_screen=(screener is not None),
+            shot_type=shot_type,
+            rng=rng,
+            origin_point=state.current_receiver_location or state.action_origin or _player_floor_point(context, current_actor.player_id) or _court_point("top"),
+            defender_point=state.primary_defender_location or _defender_floor_point(context, primary_defender),
+            template=_shot_template_for_context(
+                family=context.play_call.family if context.play_call else None,
+                shot_type=shot_type,
+                off_screen=(screener is not None),
+            ),
+        )
         return _materialize_shot_result(
             context=context,
             result=pullup_result,
@@ -2191,6 +2638,13 @@ def _resolve_progression_state(
         state.coverage,
         off_screen=False,
         shot_type=ShotType.ABOVE_BREAK_THREE if reset_actor.traits.pullup_shooting >= 14.0 and reset_actor.traits.separation >= 12.0 else ShotType.MIDRANGE,
+        rng=rng,
+        origin_point=state.current_receiver_location or state.action_origin or _player_floor_point(context, reset_actor.player_id) or _court_point("top"),
+        defender_point=state.primary_defender_location or _defender_floor_point(context, primary_defender),
+        template=_shot_template_for_context(
+            family=context.play_call.family if context.play_call else None,
+            shot_type=ShotType.ABOVE_BREAK_THREE if reset_actor.traits.pullup_shooting >= 14.0 and reset_actor.traits.separation >= 12.0 else ShotType.MIDRANGE,
+        ),
     )
     return _materialize_shot_result(
         context=context,
@@ -2285,6 +2739,7 @@ def _materialize_shot_result(
     shot_type = result["shot_type"]
     shot_quality = _clamp(float(result["shot_quality"]), 0.08, 0.92)
     existing_events = tuple(result.get("events", ()))
+    source_shot_event = next((event for event in existing_events if event.event_type == EventType.SHOT), None)
     pre_shot_events = tuple(event for event in existing_events if event.event_type != EventType.SHOT)
     made = rng.random() < shot_quality
     block_player_id = None
@@ -2297,16 +2752,37 @@ def _materialize_shot_result(
             block_player_id = defender.player_id
     points = _shot_points(shot_type) if made else 0
     credited_assister_id = assister_id if made and _is_assist_eligible(lead_events + pre_shot_events, shot_type) else None
+    result_origin = result.get("shot_origin")
+    result_defender_point = result.get("defender_point")
+    resolved_location = (
+        source_shot_event.location
+        if source_shot_event and source_shot_event.location
+        else _finish_point_from_origin(result_origin, shot_type)
+        if isinstance(result_origin, CourtPoint)
+        else _court_point(_shot_location_key(shot_type))
+    )
+    resolved_distance = source_shot_event.shot_distance_feet if source_shot_event and source_shot_event.shot_distance_feet is not None else distance_to_basket(resolved_location)
+    resolved_zone_label = source_shot_event.shot_zone_label if source_shot_event and source_shot_event.shot_zone_label else basic_zone_label(resolved_location)
+    resolved_defender_distance = (
+        source_shot_event.defender_distance_feet
+        if source_shot_event
+        else math.hypot(resolved_location.x - result_defender_point.x, resolved_location.y - result_defender_point.y)
+        if isinstance(result_defender_point, CourtPoint)
+        else None
+    )
     shot_event = EventContext(
         event_type=EventType.SHOT,
         actor_id=shooter.player_id,
         defender_id=defender.player_id if defender else None,
-        location=_court_point(_shot_location_key(shot_type)),
+        location=resolved_location,
         shot_type=shot_type,
+        shot_distance_feet=resolved_distance,
+        defender_distance_feet=resolved_defender_distance,
+        shot_zone_label=resolved_zone_label,
         success_probability=shot_quality,
         realized_success=made,
         points_scored=points,
-        notes="mechanic_resolved" if block_player_id is None else "mechanic_resolved;blocked",
+        notes=(source_shot_event.notes + ";mechanic_resolved" if source_shot_event and source_shot_event.notes else "mechanic_resolved") if block_player_id is None else ((source_shot_event.notes + ";mechanic_resolved;blocked") if source_shot_event and source_shot_event.notes else "mechanic_resolved;blocked"),
     )
     if made:
         return PossessionOutcome(
@@ -2598,6 +3074,90 @@ def _all_players(context: PossessionContext, *, offense: bool) -> list[PlayerSim
     return [player for player in pool if player.player_id in player_ids]
 
 
+def _player_floor_point(context: PossessionContext, player_id: str | None) -> CourtPoint | None:
+    if player_id is None:
+        return None
+    for state in context.floor_players:
+        if state.player_id == player_id:
+            return state.location
+    return None
+
+
+def _defender_floor_point(context: PossessionContext, defender: PlayerSimProfile | None) -> CourtPoint | None:
+    if defender is None:
+        return None
+    return _player_floor_point(context, defender.player_id)
+
+
+def _coalesce_point(*points: CourtPoint | None) -> CourtPoint | None:
+    for point in points:
+        if point is not None:
+            return point
+    return None
+
+
+def _action_point_for_zone(zone: CourtZone | None) -> CourtPoint:
+    if zone == CourtZone.LEFT_WING:
+        return _court_point("left_wing")
+    if zone == CourtZone.RIGHT_WING:
+        return _court_point("right_wing")
+    return _court_point("top")
+
+
+def _blend_points(base: CourtPoint, target: CourtPoint, *, weight: float) -> CourtPoint:
+    return geometry_court_point(
+        (base.x * (1.0 - weight)) + (target.x * weight),
+        (base.y * (1.0 - weight)) + (target.y * weight),
+    )
+
+
+def _drive_target_from_origin(origin: CourtPoint) -> CourtPoint:
+    paint_target = geometry_court_point(origin.x * 0.35, max(9.0, min(14.0, (origin.y * 0.38) + 4.8)))
+    return _blend_points(origin, paint_target, weight=0.68)
+
+
+def _help_rotation_point(origin: CourtPoint) -> CourtPoint:
+    return geometry_court_point(origin.x * 0.48, max(9.5, min(15.0, (origin.y * 0.42) + 5.8)))
+
+
+def _pressure_point(origin: CourtPoint, defender_point: CourtPoint | None) -> CourtPoint:
+    if defender_point is None:
+        return geometry_court_point(origin.x * 0.92, origin.y - 0.8)
+    return _blend_points(origin, defender_point, weight=0.45)
+
+
+def _finish_point_from_origin(origin: CourtPoint, shot_type: ShotType) -> CourtPoint:
+    if shot_type == ShotType.RIM:
+        return geometry_court_point(origin.x * 0.18, max(6.2, min(7.6, (origin.y * 0.25) + 2.8)))
+    if shot_type == ShotType.PAINT:
+        return geometry_court_point(origin.x * 0.28, max(8.5, min(12.5, (origin.y * 0.35) + 4.5)))
+    if shot_type == ShotType.MIDRANGE:
+        return geometry_court_point(origin.x * 0.82, max(15.5, min(22.5, origin.y)))
+    return geometry_court_point(origin.x, max(22.2, origin.y))
+
+
+def _shot_template_for_context(
+    *,
+    family: PlayFamily | None,
+    shot_type: ShotType,
+    off_screen: bool = False,
+    off_ball_state: str | None = None,
+) -> str | None:
+    if shot_type == ShotType.CORNER_THREE:
+        return "corner_catch"
+    if family == PlayFamily.HANDOFF:
+        return "handoff_pullup" if shot_type == ShotType.MIDRANGE else "flare_three"
+    if family in {PlayFamily.HIGH_PICK_AND_ROLL, PlayFamily.DOUBLE_DRAG}:
+        return "side_pnr_pullup" if shot_type == ShotType.MIDRANGE else "slot_three"
+    if off_screen:
+        return "flare_three" if shot_type in {ShotType.ABOVE_BREAK_THREE, ShotType.CORNER_THREE} else "handoff_pullup"
+    if off_ball_state == "corner_drift":
+        return "corner_catch"
+    if shot_type == ShotType.ABOVE_BREAK_THREE:
+        return "slot_three"
+    return None
+
+
 def _get_player(context: PossessionContext, player_id: str | None) -> PlayerSimProfile | None:
     if player_id is None:
         return None
@@ -2642,8 +3202,6 @@ def _shot_points(shot_type: ShotType) -> int:
 
 
 def _court_point(kind: str):
-    from basketball_sim_schema import CourtPoint, CourtZone
-
     mapping = {
         "top": CourtZone.TOP,
         "wing": CourtZone.RIGHT_WING,
@@ -2658,18 +3216,18 @@ def _court_point(kind: str):
         "rim": CourtZone.RIM,
     }
     coords = {
-        CourtZone.TOP: (0.0, 22.0),
-        CourtZone.LEFT_WING: (-18.0, 21.0),
-        CourtZone.RIGHT_WING: (18.0, 21.0),
-        CourtZone.PAINT: (0.0, 8.0),
-        CourtZone.ELBOW_RIGHT: (8.0, 16.0),
-        CourtZone.LEFT_CORNER: (-22.0, 3.0),
-        CourtZone.RIGHT_CORNER: (22.0, 3.0),
-        CourtZone.RIM: (0.0, 1.5),
+        CourtZone.TOP: (0.0, 25.0),
+        CourtZone.LEFT_WING: (-19.0, 22.5),
+        CourtZone.RIGHT_WING: (19.0, 22.5),
+        CourtZone.PAINT: (0.0, 12.0),
+        CourtZone.ELBOW_RIGHT: (8.0, 18.5),
+        CourtZone.LEFT_CORNER: (-22.0, 6.0),
+        CourtZone.RIGHT_CORNER: (22.0, 6.0),
+        CourtZone.RIM: (0.0, 6.75),
     }
     zone = mapping[kind]
     x, y = coords[zone]
-    return CourtPoint(x=x, y=y, zone=zone)
+    return geometry_court_point(x, y)
 
 
 def _shot_location_key(shot_type: ShotType) -> str:

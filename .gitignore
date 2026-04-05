@@ -6,3 +6,7 @@ results/
 venv/
 *.log
 data/
+.DS_Store
+output/
+parleyday.sqlite
+godot-client/.godot/

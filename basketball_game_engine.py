@@ -12,6 +12,8 @@ from basketball_sim_schema import (
     DefensiveAssignment,
     EntrySource,
     EntryType,
+    EventContext,
+    EventType,
     FloorPlayerState,
     GameClockState,
     GameSimulationInput,
@@ -31,6 +33,15 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
     player_lookup = {player.player_id: player for player in sim_input.players}
     home_lineup_ids = sim_input.home_rotation.starters
     away_lineup_ids = sim_input.away_rotation.starters
+    tip_home_player_id, tip_away_player_id = _select_tipoff_players(home_lineup_ids, away_lineup_ids, player_lookup)
+    resolved_tip_winner = sim_input.opening_tip_winner or _simulate_tipoff_winner(
+        sim_input.home_team_code,
+        sim_input.away_team_code,
+        tip_home_player_id,
+        tip_away_player_id,
+        player_lookup,
+        rng,
+    )
 
     home_score = 0
     away_score = 0
@@ -44,9 +55,7 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
     possessions: list[SimulatedPossession] = []
     current_floor_states: tuple[FloorPlayerState, ...] | None = None
 
-    offense_home = sim_input.opening_tip_winner == sim_input.home_team_code
-    if sim_input.opening_tip_winner is None:
-        offense_home = True
+    offense_home = resolved_tip_winner == sim_input.home_team_code
 
     game_seconds_remaining = 48.0 * 60.0
     carry_over_rebound = False
@@ -77,6 +86,27 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
         )
         home_lineup = _lineup_from_ids(sim_input.home_team_code, home_lineup_ids, player_lookup)
         away_lineup = _lineup_from_ids(sim_input.away_team_code, away_lineup_ids, player_lookup)
+        sub_clock = _clock_state(game_seconds_remaining, possession_count, 24.0)
+        event_log.extend(
+            _build_substitution_events(
+                previous_home_lineup_ids,
+                home_lineup_ids,
+                sim_input.home_team_code,
+                player_lookup,
+                seconds_remaining=sub_clock.seconds_remaining_in_period,
+                period=sub_clock.period,
+            )
+        )
+        event_log.extend(
+            _build_substitution_events(
+                previous_away_lineup_ids,
+                away_lineup_ids,
+                sim_input.away_team_code,
+                player_lookup,
+                seconds_remaining=sub_clock.seconds_remaining_in_period,
+                period=sub_clock.period,
+            )
+        )
         offense_team = sim_input.home_team_code if offense_home else sim_input.away_team_code
         defense_team = sim_input.away_team_code if offense_home else sim_input.home_team_code
         offense_ids = home_lineup_ids if offense_home else away_lineup_ids
@@ -90,7 +120,8 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
             game_seconds_remaining,
             _draw_possession_seconds(sim_input, rng, offensive_rebound=carry_over_rebound),
         )
-        clock = _clock_state(game_seconds_remaining, possession_count, seconds_per_possession)
+        start_shot_clock = 14.0 if next_entry_type == EntryType.OREB else 24.0
+        clock = _clock_state(game_seconds_remaining, possession_count, start_shot_clock)
         score = ScoreState(offense_score=home_score if offense_home else away_score, defense_score=away_score if offense_home else home_score)
         start_offense_score = score.offense_score
         start_defense_score = score.defense_score
@@ -125,6 +156,8 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
                 possession_number=possession_count,
                 offense_team_code=offense_team,
                 defense_team_code=defense_team,
+                home_lineup_ids=home_lineup_ids,
+                away_lineup_ids=away_lineup_ids,
                 period=clock.period,
                 start_clock=clock.seconds_remaining_in_period,
                 end_clock=max(0.0, clock.seconds_remaining_in_period - seconds_per_possession),
@@ -207,6 +240,9 @@ def simulate_game(sim_input: GameSimulationInput, rng_seed: int | None = None) -
         event_log=tuple(event_log),
         player_box_scores=player_box_scores,
         team_box_scores=team_box_scores,
+        opening_tip_winner=resolved_tip_winner,
+        tipoff_home_player_id=tip_home_player_id,
+        tipoff_away_player_id=tip_away_player_id,
     )
 
 
@@ -221,6 +257,47 @@ def simulate_games(sim_inputs: list[GameSimulationInput], rng_seed: int | None =
 def _estimated_total_possessions(sim_input: GameSimulationInput) -> int:
     avg_pace = (sim_input.home_tactics.pace_target + sim_input.away_tactics.pace_target) / 2.0
     return max(150, min(220, round(avg_pace * 2.0)))
+
+
+def _select_tipoff_players(
+    home_lineup_ids: tuple[str, ...],
+    away_lineup_ids: tuple[str, ...],
+    player_lookup: dict[str, object],
+) -> tuple[str | None, str | None]:
+    def _best_jump_ball_candidate(lineup_ids: tuple[str, ...]) -> str | None:
+        candidates = [player_lookup[player_id] for player_id in lineup_ids if player_id in player_lookup]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda player: (
+                ((player.traits.reach * 0.42) + (player.traits.size * 0.33) + (player.traits.burst * 0.25)),
+                player.traits.size,
+                player.traits.reach,
+            ),
+            reverse=True,
+        )
+        return candidates[0].player_id
+
+    return _best_jump_ball_candidate(home_lineup_ids), _best_jump_ball_candidate(away_lineup_ids)
+
+
+def _simulate_tipoff_winner(
+    home_team_code: str,
+    away_team_code: str,
+    tip_home_player_id: str | None,
+    tip_away_player_id: str | None,
+    player_lookup: dict[str, object],
+    rng: random.Random,
+) -> str:
+    if tip_home_player_id is None:
+        return away_team_code
+    if tip_away_player_id is None:
+        return home_team_code
+    home_player = player_lookup[tip_home_player_id]
+    away_player = player_lookup[tip_away_player_id]
+    home_score = ((home_player.traits.reach * 0.42) + (home_player.traits.size * 0.30) + (home_player.traits.burst * 0.28)) + rng.uniform(-2.0, 2.0)
+    away_score = ((away_player.traits.reach * 0.42) + (away_player.traits.size * 0.30) + (away_player.traits.burst * 0.28)) + rng.uniform(-2.0, 2.0)
+    return home_team_code if home_score >= away_score else away_team_code
 
 
 def _draw_possession_seconds(sim_input: GameSimulationInput, rng: random.Random, offensive_rebound: bool) -> float:
@@ -260,24 +337,70 @@ def _lineup_from_ids(team_code: str, lineup_ids: tuple[str, ...], player_lookup:
         spacing_score=_avg(player.traits.catch_shoot for player in players),
         creation_score=_avg(max(player.traits.offensive_load, player.traits.pass_vision) for player in players),
         rim_pressure_score=_avg((player.traits.separation + player.traits.burst + player.traits.foul_drawing) / 3.0 for player in players),
-        rebounding_score=_avg((player.traits.oreb + player.traits.dreb) / 2.0 for player in players),
+        rebounding_score=_avg(player.traits.rebounding for player in players),
         switchability_score=_avg((player.traits.containment + player.traits.closeout + player.traits.screen_nav) / 3.0 for player in players),
         rim_protection_score=_avg(player.traits.rim_protect for player in players),
     )
 
 
-def _clock_state(game_seconds_remaining: float, possession_number: int, seconds_per_possession: float) -> GameClockState:
+def _clock_state(game_seconds_remaining: float, possession_number: int, shot_clock_start: float) -> GameClockState:
     elapsed = (48.0 * 60.0) - game_seconds_remaining
     period = min(4, int(elapsed // (12.0 * 60.0)) + 1)
     period_elapsed = elapsed % (12.0 * 60.0)
     seconds_remaining_in_period = max(0.0, (12.0 * 60.0) - period_elapsed)
-    shot_clock = min(24.0, seconds_per_possession)
+    shot_clock = max(0.0, min(24.0, shot_clock_start))
     return GameClockState(
         period=period,
         seconds_remaining_in_period=seconds_remaining_in_period,
         shot_clock=shot_clock,
         possession_number=possession_number,
     )
+
+
+def _build_substitution_events(
+    previous_lineup_ids: tuple[str, ...],
+    next_lineup_ids: tuple[str, ...],
+    team_code: str,
+    player_lookup: dict[str, object],
+    *,
+    seconds_remaining: float,
+    period: int,
+) -> tuple[EventContext, ...]:
+    outgoing = tuple(player_id for player_id in previous_lineup_ids if player_id not in next_lineup_ids)
+    incoming = tuple(player_id for player_id in next_lineup_ids if player_id not in previous_lineup_ids)
+    if not outgoing and not incoming:
+        return ()
+
+    events: list[EventContext] = []
+    location = CourtPoint(x=22.0, y=47.0, zone=CourtZone.RIGHT_WING)
+    pair_count = max(len(outgoing), len(incoming))
+    for idx in range(pair_count):
+        sub_out_id = outgoing[idx] if idx < len(outgoing) else None
+        sub_in_id = incoming[idx] if idx < len(incoming) else None
+        sub_out_name = getattr(player_lookup.get(sub_out_id), "name", sub_out_id) if sub_out_id else "someone"
+        sub_in_name = getattr(player_lookup.get(sub_in_id), "name", sub_in_id) if sub_in_id else "someone"
+        events.append(
+            EventContext(
+                event_type=EventType.SUBSTITUTION,
+                actor_id=sub_in_id,
+                receiver_id=sub_out_id,
+                location=location,
+                notes=(
+                    f"{team_code} makes a change: {sub_in_name} checks in for {sub_out_name} "
+                    f"with {_format_period_clock(period, seconds_remaining)} on the clock"
+                ),
+            )
+        )
+    return tuple(events)
+
+
+def _format_period_clock(period: int, seconds_remaining: float) -> str:
+    minutes = int(max(0.0, seconds_remaining) // 60)
+    seconds = int(round(max(0.0, seconds_remaining) % 60))
+    if seconds == 60:
+        minutes += 1
+        seconds = 0
+    return f"Q{period} {minutes:01d}:{seconds:02d}"
 
 
 def _floor_states(offense_ids: tuple[str, ...], defense_ids: tuple[str, ...]) -> tuple[FloorPlayerState, ...]:

@@ -24,6 +24,7 @@ from basketball_sim_schema import (
     PossessionContext,
     PossessionPhase,
     ScoreState,
+    ShotType,
 )
 from nba_matchup_features import load_nba_matchup_features
 from dfs_ingest import parse_draftkings_salary_csv
@@ -176,6 +177,9 @@ def build_possession_view_payload(
             "away_team": sim_input.away_team_code,
             "home_team_name": home_display_name,
             "away_team_name": away_display_name,
+            "opening_tip_winner": game_result.opening_tip_winner,
+            "tipoff_home_player_id": game_result.tipoff_home_player_id,
+            "tipoff_away_player_id": game_result.tipoff_away_player_id,
             "initial_scoreboard": initial_scoreboard,
             "beats": beats,
         }
@@ -235,6 +239,19 @@ def build_possession_view_payload(
                 "side": "offense" if player.player_id in offense_ids else "defense",
                 "offensive_role": player.offensive_role.value,
                 "defensive_role": player.defensive_role.value,
+                "traits": {
+                    "speed": player.traits.speed,
+                    "burst": player.traits.burst,
+                    "stamina": player.traits.stamina,
+                    "containment": player.traits.containment,
+                    "screen_nav": player.traits.screen_nav,
+                    "closeout": player.traits.closeout,
+                    "ball_handle": player.traits.ball_security,
+                    "pass_vision": player.traits.pass_vision,
+                    "decision_making": player.traits.decision_making,
+                    "size": player.traits.size,
+                    "reach": player.traits.reach,
+                },
             }
             for player in sim_input.players
             if player.player_id in offense_ids or player.player_id in defense_ids
@@ -281,6 +298,19 @@ def build_possession_view_payload(
                 "side": "offense" if player.player_id in offense_ids else "defense",
                 "offensive_role": player.offensive_role.value,
                 "defensive_role": player.defensive_role.value,
+                "traits": {
+                    "speed": player.traits.speed,
+                    "burst": player.traits.burst,
+                    "stamina": player.traits.stamina,
+                    "containment": player.traits.containment,
+                    "screen_nav": player.traits.screen_nav,
+                    "closeout": player.traits.closeout,
+                    "ball_handle": player.traits.ball_security,
+                    "pass_vision": player.traits.pass_vision,
+                    "decision_making": player.traits.decision_making,
+                    "size": player.traits.size,
+                    "reach": player.traits.reach,
+                },
             }
             for player in sim_input.players
             if player.player_id in offense_ids or player.player_id in defense_ids
@@ -452,7 +482,7 @@ def _profile_to_sim_player(profile: dict[str, Any], team_code: str, availability
             pass_accuracy=_rating((assists / max(minutes, 1.0)) * 1.8 + 0.42),
             decision_making=_rating((games_sample / 8.0) * 0.3 + 0.5),
             screen_setting=_screen_rating(position, rebounds),
-            oreb=_rating((rebounds / max(minutes, 1.0)) * 1.2 + (0.25 if position == "C" else 0.05)),
+            rebounding=_rating((rebounds / max(minutes, 1.0)) * 1.3 + (0.22 if position == "C" else 0.08)),
             free_throw_rating=_rating(0.62),
             ft_pct_raw=0.78,
             foul_drawing=_rating((points / max(minutes, 1.0)) * 1.5 + 0.35),
@@ -462,7 +492,6 @@ def _profile_to_sim_player(profile: dict[str, Any], team_code: str, availability
             interior_def=_interior_rating(position, rebounds),
             rim_protect=_rim_rating(position, rebounds),
             steal_pressure=_rating(0.48 if position in {"PG", "SG", "SF"} else 0.34),
-            dreb=_rating((rebounds / max(minutes, 1.0)) * 1.4 + 0.20),
             foul_discipline=_rating(0.60),
             help_rotation=_rating(0.58),
             stamina=_rating(min(minutes / 34.0, 1.0)),
@@ -555,6 +584,9 @@ def _serialize_events(events: tuple[Any, ...], player_lookup: dict[str, Any]) ->
                 "zone": event.location.zone.value if event.location else None,
             },
             "shot_type": event.shot_type.value if event.shot_type else None,
+            "shot_distance_feet": round(event.shot_distance_feet, 2) if event.shot_distance_feet is not None else None,
+            "defender_distance_feet": round(event.defender_distance_feet, 2) if event.defender_distance_feet is not None else None,
+            "shot_zone_label": event.shot_zone_label,
             "turnover_type": event.turnover_type.value if event.turnover_type else None,
             "success_probability": event.success_probability,
             "realized_success": event.realized_success,
@@ -631,6 +663,10 @@ def _build_match_beats(
                     "y": event.location.y if event.location else None,
                     "zone": event.location.zone.value if event.location else None,
                 },
+                "shot_type": event.shot_type.value if event.shot_type else None,
+                "shot_distance_feet": round(event.shot_distance_feet, 2) if event.shot_distance_feet is not None else None,
+                "defender_distance_feet": round(event.defender_distance_feet, 2) if event.defender_distance_feet is not None else None,
+                "shot_zone_label": event.shot_zone_label,
                 "clock_display": _format_clock(seconds_remaining),
                 "shot_clock": round(shot_clock, 1),
                 "offense_score": offense_score,
@@ -693,35 +729,89 @@ def _build_game_match_beats(game_result: Any, player_lookup: dict[str, Any]) -> 
         )
         beat_index += 1
     for possession in game_result.possessions:
+        transition_label = "Start"
         if previous_possession is not None:
+            substitution_beats = _build_substitution_beats(
+                game_result,
+                previous_possession,
+                possession,
+                player_lookup,
+                beat_index=beat_index,
+                home_score=home_score,
+                away_score=away_score,
+            )
+            beats.extend(substitution_beats)
+            beat_index += len(substitution_beats)
             transition_label, transition_commentary = _describe_possession_change(previous_possession, possession)
             transition_reset = _build_possession_reset_positions(
                 game_result,
                 player_lookup,
                 possession.offense_team_code,
                 possession.defense_team_code,
-                stage="backcourt",
+                offense_lineup_ids=possession.home_lineup_ids if possession.offense_team_code == game_result.home_team_code else possession.away_lineup_ids,
+                defense_lineup_ids=possession.away_lineup_ids if possession.defense_team_code == game_result.away_team_code else possession.home_lineup_ids,
+                stage="inbound" if transition_label == "Inbound" else "backcourt",
             )
             beats.append(
                 {
                     "index": beat_index,
                     "event_apply_index": event_offset - 1,
                     "offense_team_code": possession.offense_team_code,
+                    "home_lineup_ids": list(possession.home_lineup_ids),
+                    "away_lineup_ids": list(possession.away_lineup_ids),
                     "label": transition_label,
-                    "commentary": transition_commentary,
+                    "commentary": (
+                        f"{possession.offense_team_code} gets set to inbound from the baseline"
+                        if transition_label == "Inbound"
+                        else transition_commentary
+                    ),
                     "event_type": "possession_change",
                     "focus_player_id": None,
                     "ball_player_id": _reset_ball_handler(transition_reset),
-                    "location": {"x": 0.0, "y": 40.0, "zone": "backcourt"},
+                    "location": {"x": -22.8 if transition_label == "Inbound" else 0.0, "y": 92.0 if transition_label == "Inbound" else 72.0, "zone": "backcourt"},
                     "clock_display": _format_clock(possession.start_clock),
                     "shot_clock": round(possession.start_shot_clock, 1),
                     "offense_score": home_score,
                     "defense_score": away_score,
-                    "duration_ms": 900,
+                    "duration_ms": 1200 if transition_label == "Inbound" else 980,
                     "reset_positions": transition_reset,
                 }
             )
             beat_index += 1
+            if transition_label == "Inbound":
+                inbound_push = _build_possession_reset_positions(
+                    game_result,
+                    player_lookup,
+                    possession.offense_team_code,
+                    possession.defense_team_code,
+                    offense_lineup_ids=possession.home_lineup_ids if possession.offense_team_code == game_result.home_team_code else possession.away_lineup_ids,
+                    defense_lineup_ids=possession.away_lineup_ids if possession.defense_team_code == game_result.away_team_code else possession.home_lineup_ids,
+                    stage="backcourt_push",
+                )
+                inbound_handler = _reset_ball_handler(inbound_push)
+                beats.append(
+                    {
+                        "index": beat_index,
+                        "event_apply_index": event_offset - 1,
+                        "offense_team_code": possession.offense_team_code,
+                        "home_lineup_ids": list(possession.home_lineup_ids),
+                        "away_lineup_ids": list(possession.away_lineup_ids),
+                        "label": "Inbound Pass",
+                        "commentary": f"{possession.offense_team_code} gets it in from the baseline and starts to bring it up",
+                        "event_type": "pass",
+                        "focus_player_id": inbound_handler,
+                        "ball_player_id": inbound_handler,
+                        "receiver_id": inbound_handler,
+                        "location": {"x": -8.5, "y": 84.0, "zone": "backcourt"},
+                        "clock_display": _format_clock(possession.start_clock),
+                        "shot_clock": round(possession.start_shot_clock, 1),
+                        "offense_score": home_score,
+                        "defense_score": away_score,
+                        "duration_ms": 760,
+                        "reset_positions": inbound_push,
+                    }
+                )
+                beat_index += 1
         possession_label = (
             f"{possession.offense_team_code} transition"
             if possession.entry_type == EntryType.TRANSITION
@@ -729,29 +819,49 @@ def _build_game_match_beats(game_result: Any, player_lookup: dict[str, Any]) -> 
             if possession.entry_type == EntryType.OREB
             else f"{possession.offense_team_code} halfcourt"
         )
+        reset_stage = (
+            "advance"
+            if possession.entry_type == EntryType.TRANSITION or transition_label == "Inbound"
+            else "backcourt_push"
+            if transition_label in {"Outlet", "Turnover"}
+            else "advance"
+        )
         possession_reset = _build_possession_reset_positions(
             game_result,
             player_lookup,
             possession.offense_team_code,
             possession.defense_team_code,
-            stage="advance",
+            offense_lineup_ids=possession.home_lineup_ids if possession.offense_team_code == game_result.home_team_code else possession.away_lineup_ids,
+            defense_lineup_ids=possession.away_lineup_ids if possession.defense_team_code == game_result.away_team_code else possession.home_lineup_ids,
+            stage=reset_stage,
+        )
+        possession_location = (
+            {"x": 0.0, "y": 36.0, "zone": "backcourt"}
+            if reset_stage == "backcourt_push"
+            else {"x": 0.0, "y": 31.0, "zone": "top"}
         )
         beats.append(
             {
                 "index": beat_index,
                 "event_apply_index": event_offset - 1,
                 "offense_team_code": possession.offense_team_code,
+                "home_lineup_ids": list(possession.home_lineup_ids),
+                "away_lineup_ids": list(possession.away_lineup_ids),
                 "label": "Possession",
-                "commentary": possession_label,
+                "commentary": (
+                    f"{possession.offense_team_code} pushes up the floor"
+                    if transition_label in {"Outlet", "Turnover"} or possession.entry_type == EntryType.TRANSITION
+                    else possession_label
+                ),
                 "event_type": "possession_start",
                 "focus_player_id": None,
                 "ball_player_id": _reset_ball_handler(possession_reset),
-                "location": {"x": 0.0, "y": 32.0, "zone": "backcourt"},
+                "location": possession_location,
                 "clock_display": _format_clock(possession.start_clock),
                 "shot_clock": round(possession.start_shot_clock, 1),
                 "offense_score": home_score,
                 "defense_score": away_score,
-                "duration_ms": 650,
+                "duration_ms": 980 if reset_stage == "backcourt_push" or possession.entry_type == EntryType.TRANSITION else 920,
                 "reset_positions": possession_reset,
             }
         )
@@ -776,6 +886,8 @@ def _build_game_match_beats(game_result: Any, player_lookup: dict[str, Any]) -> 
             offense_team_code=possession.offense_team_code,
         )
         for beat in event_beats:
+            beat["home_lineup_ids"] = list(possession.home_lineup_ids)
+            beat["away_lineup_ids"] = list(possession.away_lineup_ids)
             if possession.offense_team_code == game_result.home_team_code:
                 beat["offense_score"] = beat["offense_score"] - possession.start_offense_score + home_score
                 beat["defense_score"] = beat["defense_score"] - possession.start_defense_score + away_score
@@ -808,67 +920,145 @@ def _describe_possession_change(previous_possession: Any, next_possession: Any) 
     return "Change", f"{next_possession.offense_team_code} takes over for the next possession"
 
 
+def _build_substitution_beats(
+    game_result: Any,
+    previous_possession: Any,
+    next_possession: Any,
+    player_lookup: dict[str, Any],
+    *,
+    beat_index: int,
+    home_score: int,
+    away_score: int,
+) -> list[dict[str, Any]]:
+    beats: list[dict[str, Any]] = []
+    for team_side, offense_code, previous_ids, next_ids in (
+        ("home", game_result.home_team_code, previous_possession.home_lineup_ids, next_possession.home_lineup_ids),
+        ("away", game_result.away_team_code, previous_possession.away_lineup_ids, next_possession.away_lineup_ids),
+    ):
+        outgoing = tuple(player_id for player_id in previous_ids if player_id not in next_ids)
+        incoming = tuple(player_id for player_id in next_ids if player_id not in previous_ids)
+        if not outgoing and not incoming:
+            continue
+        incoming_names = ", ".join(_player_name(player_lookup, player_id) for player_id in incoming if player_id)
+        outgoing_names = ", ".join(_player_name(player_lookup, player_id) for player_id in outgoing if player_id)
+        beats.append(
+            {
+                "index": beat_index + len(beats),
+                "event_apply_index": -1,
+                "offense_team_code": offense_code,
+                "home_lineup_ids": list(next_possession.home_lineup_ids),
+                "away_lineup_ids": list(next_possession.away_lineup_ids),
+                "label": "Substitution",
+                "commentary": f"{incoming_names or 'Fresh legs'} check in for {outgoing_names or 'the current group'}",
+                "event_type": "substitution",
+                "focus_player_id": incoming[0] if incoming else None,
+                "ball_player_id": None,
+                "receiver_id": outgoing[0] if outgoing else None,
+                "defender_id": None,
+                "location": {"x": 22.0 if team_side == "home" else -22.0, "y": 47.0, "zone": "right_wing"},
+                "clock_display": _format_clock(next_possession.start_clock),
+                "shot_clock": round(next_possession.start_shot_clock, 1),
+                "offense_score": home_score,
+                "defense_score": away_score,
+                "duration_ms": 900,
+            }
+        )
+    return beats
+
+
 def _build_possession_reset_positions(
     game_result: Any,
     player_lookup: dict[str, Any],
     offense_team_code: str,
     defense_team_code: str,
     *,
+    offense_lineup_ids: tuple[str, ...] | None = None,
+    defense_lineup_ids: tuple[str, ...] | None = None,
     stage: str,
 ) -> list[dict[str, Any]]:
-    offense_ids = tuple(
-        box.player_id
-        for box in sorted(
-            (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == offense_team_code),
-            key=lambda box: box.minutes,
-            reverse=True,
-        )[:5]
-    )
-    defense_ids = tuple(
-        box.player_id
-        for box in sorted(
-            (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == defense_team_code),
-            key=lambda box: box.minutes,
-            reverse=True,
-        )[:5]
-    )
+    offense_ids = tuple(offense_lineup_ids or ())
+    defense_ids = tuple(defense_lineup_ids or ())
+    if not offense_ids:
+        offense_ids = tuple(
+            box.player_id
+            for box in sorted(
+                (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == offense_team_code),
+                key=lambda box: box.minutes,
+                reverse=True,
+            )[:5]
+        )
+    if not defense_ids:
+        defense_ids = tuple(
+            box.player_id
+            for box in sorted(
+                (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == defense_team_code),
+                key=lambda box: box.minutes,
+                reverse=True,
+            )[:5]
+        )
     if not offense_ids or not defense_ids:
         return []
     base_states = list(_floor_states(offense_ids, defense_ids))
-    offense_layout = (
-        [
-            (0.0, 40.0, "backcourt", True),
-            (-15.0, 36.0, "left_wing", False),
-            (15.0, 36.0, "right_wing", False),
-            (-10.0, 30.0, "left_wing", False),
-            (10.0, 28.0, "paint", False),
+    if stage == "inbound":
+        offense_layout = [
+            (-22.8, 92.0, "backcourt", True),
+            (-8.5, 84.0, "left_wing", False),
+            (8.5, 82.8, "right_wing", False),
+            (-15.5, 75.5, "left_wing", False),
+            (12.0, 69.0, "paint", False),
         ]
-        if stage == "backcourt"
-        else [
+        defense_layout = [
+            (-4.0, 77.0, "top"),
+            (6.0, 75.6, "top"),
+            (-13.5, 67.0, "left_wing"),
+            (13.5, 66.0, "right_wing"),
+            (0.0, 54.0, "paint"),
+        ]
+    elif stage == "backcourt_push":
+        offense_layout = [
+            (-6.0, 76.0, "backcourt", True),
+            (-16.0, 70.0, "left_wing", False),
+            (14.0, 69.0, "right_wing", False),
+            (-8.0, 60.0, "top", False),
+            (8.0, 56.0, "paint", False),
+        ]
+        defense_layout = [
+            (0.0, 57.0, "top"),
+            (-15.0, 53.0, "left_wing"),
+            (15.0, 53.0, "right_wing"),
+            (-18.0, 42.0, "left_wing"),
+            (0.0, 38.0, "paint"),
+        ]
+    elif stage == "backcourt":
+        offense_layout = [
+            (0.0, 72.0, "backcourt", True),
+            (-15.0, 67.0, "left_wing", False),
+            (15.0, 67.0, "right_wing", False),
+            (-10.0, 58.0, "left_wing", False),
+            (10.0, 54.0, "paint", False),
+        ]
+        defense_layout = [
+            (0.0, 54.0, "top"),
+            (-16.0, 50.0, "left_wing"),
+            (16.0, 50.0, "right_wing"),
+            (-20.0, 38.0, "left_corner"),
+            (0.0, 42.0, "paint"),
+        ]
+    else:
+        offense_layout = [
             (0.0, 32.0, "top", True),
             (-17.0, 26.0, "left_wing", False),
             (17.0, 26.0, "right_wing", False),
             (-21.0, 8.0, "left_corner", False),
             (0.0, 16.0, "paint", False),
         ]
-    )
-    defense_layout = (
-        [
-            (0.0, 27.0, "top"),
-            (-16.0, 24.0, "left_wing"),
-            (16.0, 24.0, "right_wing"),
-            (-20.0, 10.0, "left_corner"),
-            (0.0, 14.0, "paint"),
-        ]
-        if stage == "backcourt"
-        else [
+        defense_layout = [
             (0.0, 24.0, "top"),
             (-16.0, 21.0, "left_wing"),
             (16.0, 21.0, "right_wing"),
             (-20.0, 8.0, "left_corner"),
             (0.0, 12.0, "paint"),
         ]
-    )
 
     reset_positions: list[dict[str, Any]] = []
     offense_index = 0
@@ -916,46 +1106,38 @@ def _build_tipoff_positions(
     game_result: Any,
     player_lookup: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    home_ids = tuple(
-        box.player_id
-        for box in sorted(
-            (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == game_result.home_team_code),
-            key=lambda box: box.minutes,
-            reverse=True,
-        )[:5]
-    )
-    away_ids = tuple(
-        box.player_id
-        for box in sorted(
-            (box for box in game_result.player_box_scores if getattr(player_lookup.get(box.player_id), "team_code", None) == game_result.away_team_code),
-            key=lambda box: box.minutes,
-            reverse=True,
-        )[:5]
-    )
+    opening_possession = game_result.possessions[0] if game_result.possessions else None
+    home_ids = tuple(opening_possession.home_lineup_ids if opening_possession else ())
+    away_ids = tuple(opening_possession.away_lineup_ids if opening_possession else ())
     if not home_ids or not away_ids:
         return []
 
-    home_layout = [
-        (0.0, 45.0, "top", False),
+    home_jumper = getattr(game_result, "tipoff_home_player_id", None)
+    away_jumper = getattr(game_result, "tipoff_away_player_id", None)
+    tip_winner = getattr(game_result, "opening_tip_winner", None)
+    home_positions = {
+        home_jumper or (home_ids[0] if home_ids else None): (0.0, 45.8, "top", tip_winner == game_result.home_team_code),
+    }
+    away_positions = {
+        away_jumper or (away_ids[0] if away_ids else None): (0.0, 48.2, "top", tip_winner == game_result.away_team_code),
+    }
+    home_perimeter = [
         (-12.0, 50.0, "left_wing", False),
         (12.0, 50.0, "right_wing", False),
-        (-18.0, 41.0, "left_wing", False),
-        (18.0, 41.0, "right_wing", False),
+        (-18.0, 41.5, "left_wing", False),
+        (18.0, 41.5, "right_wing", False),
     ]
-    away_layout = [
-        (0.0, 49.0, "top", True),
+    away_perimeter = [
         (-12.0, 44.0, "left_wing", False),
         (12.0, 44.0, "right_wing", False),
-        (-18.0, 53.0, "left_wing", False),
-        (18.0, 53.0, "right_wing", False),
+        (-18.0, 52.5, "left_wing", False),
+        (18.0, 52.5, "right_wing", False),
     ]
 
-    if game_result.possessions and game_result.possessions[0].offense_team_code == game_result.home_team_code:
-        home_layout[0] = (0.0, 45.0, "top", True)
-        away_layout[0] = (0.0, 49.0, "top", False)
-
     positions: list[dict[str, Any]] = []
-    for player_id, (x, y, zone, has_ball) in zip(home_ids, home_layout, strict=False):
+    home_remaining = [player_id for player_id in home_ids if player_id not in home_positions]
+    away_remaining = [player_id for player_id in away_ids if player_id not in away_positions]
+    for player_id, (x, y, zone, has_ball) in home_positions.items():
         positions.append(
             {
                 "player_id": player_id,
@@ -967,7 +1149,31 @@ def _build_tipoff_positions(
                 "has_ball": has_ball,
             }
         )
-    for player_id, (x, y, zone, has_ball) in zip(away_ids, away_layout, strict=False):
+    for player_id, (x, y, zone, has_ball) in zip(home_remaining, home_perimeter, strict=False):
+        positions.append(
+            {
+                "player_id": player_id,
+                "team_code": game_result.home_team_code,
+                "side": "offense",
+                "x": x,
+                "y": y,
+                "zone": zone,
+                "has_ball": has_ball,
+            }
+        )
+    for player_id, (x, y, zone, has_ball) in away_positions.items():
+        positions.append(
+            {
+                "player_id": player_id,
+                "team_code": game_result.away_team_code,
+                "side": "defense",
+                "x": x,
+                "y": y,
+                "zone": zone,
+                "has_ball": has_ball,
+            }
+        )
+    for player_id, (x, y, zone, has_ball) in zip(away_remaining, away_perimeter, strict=False):
         positions.append(
             {
                 "player_id": player_id,
@@ -997,15 +1203,22 @@ def _describe_event(event: Any, player_lookup: dict[str, Any]) -> tuple[str, str
         return "Cut", f"{actor or 'Off-ball cutter'} dives behind the defense"
     if event.event_type == EventType.SHOT:
         shot_name = (event.shot_type.value.replace('_', ' ') if event.shot_type else 'shot').title()
+        distance_text = (
+            f" from {int(round(event.shot_distance_feet))} feet"
+            if getattr(event, "shot_distance_feet", None) is not None and event.shot_type != ShotType.FREE_THROW
+            else ""
+        )
         if event.realized_success:
-            return "Bucket", f"{actor or 'Shooter'} knocks down the {shot_name.lower()}"
-        return "Shot", f"{actor or 'Shooter'} puts up a {shot_name.lower()}"
+            return "Bucket", f"{actor or 'Shooter'} knocks down the {shot_name.lower()}{distance_text}"
+        return "Shot", f"{actor or 'Shooter'} puts up a {shot_name.lower()}{distance_text}"
     if event.event_type == EventType.REBOUND:
         return "Rebound", f"{actor or 'Rebounder'} secures it"
     if event.event_type == EventType.FOUL:
         return "Foul", f"{actor or 'Attacker'} draws contact"
     if event.event_type == EventType.TURNOVER:
         return "Turnover", f"{actor or 'Ball handler'} gives it away"
+    if event.event_type == EventType.SUBSTITUTION:
+        return "Substitution", event.notes or f"{actor or 'A reserve'} checks in for {receiver or 'a teammate'}"
     return event.event_type.value.replace("_", " ").title(), event.notes or "Action unfolds"
 
 

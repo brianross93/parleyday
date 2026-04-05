@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from basketball_db import import_draftkings_slate_to_db, load_nba_sim_profiles_for_slate
+from data_pipeline.cache import DEFAULT_DB_PATH
 from basketball_sim_schema import (
     DefensiveCoverage,
     DefensiveRole,
@@ -14,15 +16,51 @@ from basketball_sim_schema import (
     RotationPlan,
     TeamTactics,
 )
-from dfs_ingest import DraftKingsSlate, parse_draftkings_salary_csv
+from dfs_ingest import DraftKingsSlate
 from dfs_nba import DraftKingsNBAProjection, build_nba_dk_projections
 from nba_matchup_features import load_nba_matchup_features
 from player_name_utils import dfs_name_key
 
 
-def build_nba_sim_inputs_from_dk_csv(date_str: str, salary_csv_path: str) -> list[GameSimulationInput]:
-    slate = parse_draftkings_salary_csv(salary_csv_path, sport="nba")
-    return build_nba_sim_inputs(date_str, slate)
+def build_nba_sim_inputs_from_dk_csv(date_str: str, salary_csv_path: str, *, db_path: str | None = None) -> list[GameSimulationInput]:
+    slate = import_draftkings_slate_to_db(date_str, salary_csv_path, sport="nba", db_path=db_path or DEFAULT_DB_PATH)
+    return build_nba_sim_inputs_from_db_slate(date_str, slate, db_path=db_path or DEFAULT_DB_PATH)
+
+
+def build_nba_sim_inputs_from_db_slate(date_str: str, slate: DraftKingsSlate, *, db_path: str = DEFAULT_DB_PATH) -> list[GameSimulationInput]:
+    if slate.sport != "nba":
+        return []
+    profiles_by_key = load_nba_sim_profiles_for_slate(date_str, slate, db_path=db_path)
+    by_game: dict[str, list[PlayerSimProfile]] = defaultdict(list)
+    for player in slate.players:
+        if not player.game or "@" not in player.game:
+            continue
+        profile = profiles_by_key.get((player.team, dfs_name_key(player.name)))
+        if profile is None:
+            continue
+        by_game[player.game].append(profile)
+    results: list[GameSimulationInput] = []
+    for game, game_players in sorted(by_game.items()):
+        away_code, home_code = game.split("@", 1)
+        team_features = load_nba_matchup_features(date_str, (away_code, home_code))
+        away_players = tuple(player for player in game_players if player.team_code == away_code)
+        home_players = tuple(player for player in game_players if player.team_code == home_code)
+        if len(away_players) < 5 or len(home_players) < 5:
+            continue
+        players = tuple(game_players)
+        results.append(
+            GameSimulationInput(
+                game_id=game,
+                home_team_code=home_code,
+                away_team_code=away_code,
+                players=players,
+                home_tactics=_build_team_tactics(home_code, home_players, team_features.get(home_code, {}), team_features.get(away_code, {})),
+                away_tactics=_build_team_tactics(away_code, away_players, team_features.get(away_code, {}), team_features.get(home_code, {})),
+                home_rotation=_build_rotation_plan(home_players),
+                away_rotation=_build_rotation_plan(away_players),
+            )
+        )
+    return results
 
 
 def build_nba_sim_inputs(date_str: str, slate: DraftKingsSlate) -> list[GameSimulationInput]:
@@ -83,7 +121,7 @@ def _projection_to_sim_profile(projection: DraftKingsNBAProjection) -> PlayerSim
             pass_accuracy=_to_rating((assist_per_minute * 0.65) + ((1.0 - projection.volatility) * 0.35)),
             decision_making=_to_rating((projection.projection_confidence * 0.55) + ((1.0 - projection.volatility) * 0.25) + (min(1.0, assist_per_minute * 1.2) * 0.2)),
             screen_setting=_screen_value(projection),
-            oreb=_to_rating(rebound_per_minute * 1.8),
+            rebounding=_to_rating(rebound_per_minute * 1.7),
             free_throw_rating=_to_rating(ft_pct_raw),
             ft_pct_raw=ft_pct_raw,
             foul_drawing=_to_rating((scoring_per_minute * 0.65) + (projection.volatility * 0.15) + (projection.projection_confidence * 0.2)),
@@ -93,7 +131,6 @@ def _projection_to_sim_profile(projection: DraftKingsNBAProjection) -> PlayerSim
             interior_def=_interior_defense_value(projection),
             rim_protect=_rim_protection_value(projection),
             steal_pressure=_to_rating((projection.volatility * 0.2) + (projection.projection_confidence * 0.35) + (0.45 if {"PG", "SG", "SF", "G"} & positions else 0.2)),
-            dreb=_to_rating(rebound_per_minute * 1.6),
             foul_discipline=_to_rating((1.0 - projection.volatility) * 0.65 + (projection.projection_confidence * 0.35)),
             help_rotation=_to_rating((_interior_defense_value(projection) / 20.0 * 0.55) + (_closeout_value(projection) / 20.0 * 0.45)),
             stamina=_to_rating((projection.recent_minutes_avg / 36.0) * projection.role_stability),

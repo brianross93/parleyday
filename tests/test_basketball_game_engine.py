@@ -112,6 +112,17 @@ def test_simulate_game_returns_coherent_result(monkeypatch) -> None:
     assert sum(1 for player in result.player_box_scores if player.minutes > 0.0) > 5
 
 
+def test_possessions_reset_shot_clock_on_change(monkeypatch) -> None:
+    sim_inputs = _sim_inputs(monkeypatch)
+    result = simulate_game(sim_inputs[0], rng_seed=7)
+    assert result.possessions
+    for possession in result.possessions:
+        if possession.entry_type.value == "oreb":
+            assert possession.start_shot_clock == 14.0
+        else:
+            assert possession.start_shot_clock == 24.0
+
+
 def test_simulate_games_runs_multiple_inputs(monkeypatch) -> None:
     sim_inputs = _sim_inputs(monkeypatch)
     results = simulate_games(sim_inputs, rng_seed=11)

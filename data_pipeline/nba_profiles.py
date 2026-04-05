@@ -52,22 +52,45 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
                         athlete_id,
                         {
                             "games": 0.0,
+                            "starts": 0.0,
                             "minutes": 0.0,
                             "points": 0.0,
                             "rebounds": 0.0,
                             "assists": 0.0,
+                            "turnovers": 0.0,
+                            "fouls": 0.0,
+                            "fga": 0.0,
+                            "three_pa": 0.0,
+                            "fta": 0.0,
+                            "oreb": 0.0,
+                            "dreb": 0.0,
                             "fantasy_scores": [],
                         },
                     )
-                    minutes = _parse_minutes(stats[label_idx["MIN"]]) if "MIN" in label_idx else 0.0
-                    points = _parse_float(stats[label_idx["PTS"]]) if "PTS" in label_idx else 0.0
-                    rebounds = _parse_float(stats[label_idx["REB"]]) if "REB" in label_idx else 0.0
-                    assists = _parse_float(stats[label_idx["AST"]]) if "AST" in label_idx else 0.0
+                    minutes = _stat_from_labels(stats, label_idx, ("MIN",), parser=_parse_minutes)
+                    points = _stat_from_labels(stats, label_idx, ("PTS",))
+                    rebounds = _stat_from_labels(stats, label_idx, ("REB", "TREB"))
+                    assists = _stat_from_labels(stats, label_idx, ("AST",))
+                    turnovers = _stat_from_labels(stats, label_idx, ("TO", "TOV"))
+                    fouls = _stat_from_labels(stats, label_idx, ("PF",))
+                    fga = _attempts_from_labels(stats, label_idx, ("FGA", "FG-A", "FG"))
+                    three_pa = _attempts_from_labels(stats, label_idx, ("3PA", "FG3A", "3PTA", "3PT-A", "3PT"))
+                    fta = _attempts_from_labels(stats, label_idx, ("FTA", "FT-A", "FT"))
+                    oreb = _stat_from_labels(stats, label_idx, ("OR", "OREB"))
+                    dreb = _stat_from_labels(stats, label_idx, ("DR", "DREB"))
                     entry["games"] += 1.0
+                    entry["starts"] += 1.0 if bool(athlete_block.get("starter")) else 0.0
                     entry["minutes"] += minutes
                     entry["points"] += points
                     entry["rebounds"] += rebounds
                     entry["assists"] += assists
+                    entry["turnovers"] += turnovers
+                    entry["fouls"] += fouls
+                    entry["fga"] += fga
+                    entry["three_pa"] += three_pa
+                    entry["fta"] += fta
+                    entry["oreb"] += oreb
+                    entry["dreb"] += dreb
                     entry["fantasy_scores"].append(_draftkings_nba_box_score_fpts(points, rebounds, assists))
 
     profiles = []
@@ -76,10 +99,18 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
             athlete_id,
             {
                 "games": 0.0,
+                "starts": 0.0,
                 "minutes": 0.0,
                 "points": 0.0,
                 "rebounds": 0.0,
                 "assists": 0.0,
+                "turnovers": 0.0,
+                "fouls": 0.0,
+                "fga": 0.0,
+                "three_pa": 0.0,
+                "fta": 0.0,
+                "oreb": 0.0,
+                "dreb": 0.0,
                 "fantasy_scores": [],
             },
         )
@@ -108,10 +139,18 @@ def fetch_nba_team_player_profiles(team_id: str, as_of_date: str, last_n_games: 
                     for injury in injuries
                 ],
                 "games_sample": statline["games"],
+                "starts": statline["starts"],
                 "minutes": statline["minutes"] / games,
                 "points": statline["points"] / games,
                 "rebounds": statline["rebounds"] / games,
                 "assists": statline["assists"] / games,
+                "turnovers": statline["turnovers"] / games,
+                "fouls": statline["fouls"] / games,
+                "fga": statline["fga"] / games,
+                "three_pa": statline["three_pa"] / games,
+                "fta": statline["fta"] / games,
+                "oreb": statline["oreb"] / games,
+                "dreb": statline["dreb"] / games,
                 "recent_fpts_avg": recent_fpts_avg,
                 "recent_fpts_weighted": recent_fpts_weighted,
                 "recent_form_delta": recent_fpts_weighted - recent_fpts_avg,
@@ -132,6 +171,24 @@ def _parse_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _stat_from_labels(stats: list[Any], label_idx: dict[str, int], labels: tuple[str, ...], parser=_parse_float) -> float:
+    for label in labels:
+        if label in label_idx and label_idx[label] < len(stats):
+            return parser(stats[label_idx[label]])
+    return 0.0
+
+
+def _attempts_from_labels(stats: list[Any], label_idx: dict[str, int], labels: tuple[str, ...]) -> float:
+    for label in labels:
+        if label in label_idx and label_idx[label] < len(stats):
+            value = stats[label_idx[label]]
+            if isinstance(value, str) and "-" in value:
+                _made, attempts = value.split("-", 1)
+                return _parse_float(attempts)
+            return _parse_float(value)
+    return 0.0
 
 
 def _draftkings_nba_box_score_fpts(points: float, rebounds: float, assists: float) -> float:

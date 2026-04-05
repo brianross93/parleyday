@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Basketball Player View</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b131b;
+      --bg-2: #0f1b25;
+      --panel: #132330;
+      --panel-soft: #172a39;
+      --line: rgba(255,255,255,0.08);
+      --text: #eef3f6;
+      --muted: #9caeba;
+      --accent: #42c98d;
+      --accent-2: #f2c161;
+      --danger: #f28e8e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(66,201,141,0.07), transparent 30%),
+        linear-gradient(180deg, #0f1821 0%, var(--bg) 100%);
+    }
+    .page {
+      max-width: 1540px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+    .hero, .panel {
+      background: rgba(19,35,48,0.92);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 18px 40px rgba(0,0,0,0.28);
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+      letter-spacing: 0.02em;
+    }
+    .hero p {
+      margin: 0;
+      max-width: 760px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .hero-actions a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.03);
+    }
+    .panel {
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    form.filters {
+      display: grid;
+      grid-template-columns: 180px 140px minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+    }
+    input, select, button {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 12px 14px;
+      font: inherit;
+    }
+    button {
+      font-weight: 700;
+      color: #082217;
+      background: linear-gradient(135deg, var(--accent) 0%, #2cae77 100%);
+      cursor: pointer;
+    }
+    .summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: var(--muted);
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(255,255,255,0.03);
+    }
+    .error {
+      color: #ffe0e0;
+      border: 1px solid rgba(255,140,140,0.35);
+      background: rgba(160, 48, 48, 0.24);
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin-bottom: 18px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .player-list {
+      max-height: calc(100vh - 220px);
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .player-link {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: rgba(255,255,255,0.02);
+      margin-bottom: 10px;
+    }
+    .player-link.active {
+      background: linear-gradient(135deg, rgba(66,201,141,0.16), rgba(66,201,141,0.05));
+      border-color: rgba(66,201,141,0.45);
+    }
+    .player-link strong {
+      display: block;
+      font-size: 1.05rem;
+      margin-bottom: 2px;
+    }
+    .player-meta {
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .player-roles {
+      margin-top: 8px;
+      color: var(--accent-2);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .profile-shell {
+      display: grid;
+      gap: 18px;
+    }
+    .identity-card {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+    .identity-badge {
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at top, rgba(66,201,141,0.16), transparent 45%),
+        linear-gradient(180deg, #172937 0%, #10202d 100%);
+      border: 1px solid var(--line);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 180px;
+    }
+    .identity-badge .team {
+      color: var(--accent);
+      font-size: 0.82rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .identity-badge .pos {
+      font-size: 3rem;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .identity-badge .status {
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+    .identity-main h2 {
+      margin: 0 0 8px;
+      font-size: 2.2rem;
+    }
+    .identity-main .subline {
+      color: var(--muted);
+      font-size: 1rem;
+      margin-bottom: 12px;
+    }
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(90px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .overview-stat {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.03);
+    }
+    .overview-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .overview-stat strong {
+      font-size: 1.2rem;
+    }
+    .section-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.03);
+      padding: 16px;
+    }
+    .card h3 {
+      margin: 0 0 14px;
+      font-size: 1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .attribute-list {
+      display: grid;
+      gap: 10px;
+    }
+    .attribute-row {
+      display: grid;
+      grid-template-columns: 1fr 48px 120px;
+      gap: 10px;
+      align-items: center;
+    }
+    .attribute-row label {
+      margin: 0;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 0.94rem;
+      color: var(--text);
+    }
+    .attribute-row strong {
+      text-align: right;
+      font-size: 1rem;
+    }
+    .bar {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      overflow: hidden;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-2) 0%, var(--accent) 100%);
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 14px;
+    }
+    .info-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .info-item strong {
+      font-size: 1rem;
+    }
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    .history-table th,
+    .history-table td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+    .history-table th {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.72rem;
+    }
+    .trend-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .trend-pill {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.03);
+    }
+    .trend-pill span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .strengths {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .strength {
+      border-radius: 999px;
+      border: 1px solid rgba(66,201,141,0.35);
+      background: rgba(66,201,141,0.1);
+      color: #baf0d7;
+      padding: 8px 12px;
+      font-size: 0.88rem;
+    }
+    .empty-state {
+      color: var(--muted);
+      padding: 40px 22px;
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+    }
+    @media (max-width: 1240px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .player-list {
+        max-height: none;
+      }
+      .section-grid {
+        grid-template-columns: 1fr;
+      }
+      .overview-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 920px) {
+      form.filters {
+        grid-template-columns: 1fr;
+      }
+      .identity-card {
+        grid-template-columns: 1fr;
+      }
+      .overview-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .info-grid {
+        grid-template-columns: 1fr;
+      }
+      .attribute-row {
+        grid-template-columns: 1fr 44px 96px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div>
+        <h1>Basketball Player View</h1>
+        <p>A Football Manager-style player profile screen for the basketball engine: stable identity, season stat baseline, derived roles, and the sim attributes that actually drive the match world.</p>
+      </div>
+      <div class="hero-actions">
+        <a href="/">Main Dashboard</a>
+        <a href="/basketball-match-view">Match View</a>
+      </div>
+    </section>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <section class="panel">
+      <form class="filters" method="get">
+        <div>
+          <label for="date">As Of Date</label>
+          <input id="date" name="date" type="date" value="{{ as_of_date }}">
+        </div>
+        <div>
+          <label for="team">Team</label>
+          <select id="team" name="team">
+            <option value="">All Teams</option>
+            {% for team in teams %}
+              <option value="{{ team }}" {% if team == team_code %}selected{% endif %}>{{ team }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="search">Player Search</label>
+          <input id="search" name="search" type="text" value="{{ search }}" placeholder="Search by player name">
+        </div>
+        <div>
+          <button type="submit">Load Player View</button>
+        </div>
+      </form>
+      <div class="summary">
+        <div class="pill">{{ players|length }} players loaded</div>
+        <div class="pill">SQLite-backed season profiles</div>
+        <div class="pill">DraftKings stays a slate layer, not the player truth layer</div>
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="panel player-list">
+        {% if players %}
+          {% for player in players %}
+            <a
+              class="player-link {% if selected_player and player.player_key == selected_player.player_key %}active{% endif %}"
+              href="/basketball-players?date={{ as_of_date }}{% if team_code %}&team={{ team_code }}{% endif %}{% if search %}&search={{ search|urlencode }}{% endif %}&player={{ player.player_key|urlencode }}"
+            >
+              <strong>{{ player.name }}</strong>
+              <div class="player-meta">
+                <span>{{ player.team_code }}</span>
+                <span>{{ player.position }}</span>
+                <span>{{ "%.1f"|format(player.minutes) }} min</span>
+                <span>{{ "%.1f"|format(player.points) }} pts</span>
+              </div>
+              <div class="player-roles">{{ player.offensive_role }} · {{ player.defensive_role }}</div>
+            </a>
+          {% endfor %}
+        {% else %}
+          <div class="empty-state">No players matched this filter set.</div>
+        {% endif %}
+      </section>
+
+      <section class="profile-shell">
+        {% if selected_player %}
+          {% set p = selected_player %}
+          {% set strengths = [
+            ('Separation', p.traits.separation),
+            ('Burst', p.traits.burst),
+            ('Speed', p.traits.speed),
+            ('Pull-Up', p.traits.pullup_shooting),
+            ('Catch & Shoot', p.traits.catch_shoot),
+            ('Finishing', p.traits.finishing),
+            ('Pass Vision', p.traits.pass_vision),
+            ('Ball Handle', p.traits.ball_security),
+            ('Containment', p.traits.containment),
+            ('Help Rotation', p.traits.help_rotation),
+            ('Rim Protect', p.traits.rim_protect),
+            ('Rebounding', p.traits.rebounding),
+            ('Stamina', p.traits.stamina)
+          ]|sort(attribute=1, reverse=true) %}
+          <section class="panel identity-card">
+            <div class="identity-badge">
+              <div class="team">{{ p.team_code }}</div>
+              <div class="pos">{{ p.position }}</div>
+              <div class="status">{{ p.status }}</div>
+            </div>
+            <div class="identity-main">
+              <h2>{{ p.name }}</h2>
+              <div class="subline">{{ p.offensive_role }} · {{ p.defensive_role }} · profile v{{ p.profile_version }}</div>
+              <div class="strengths">
+                {% for label, value in strengths[:4] %}
+                  <div class="strength">{{ label }} {{ "%.1f"|format(value) }}</div>
+                {% endfor %}
+              </div>
+              <div class="overview-grid">
+                <div class="overview-stat"><span>Games</span><strong>{{ "%.0f"|format(p.games_sample) }}</strong></div>
+                <div class="overview-stat"><span>Starts</span><strong>{{ "%.0f"|format(p.starts) }}</strong></div>
+                <div class="overview-stat"><span>Minutes</span><strong>{{ "%.1f"|format(p.minutes) }}</strong></div>
+                <div class="overview-stat"><span>Points</span><strong>{{ "%.1f"|format(p.points) }}</strong></div>
+                <div class="overview-stat"><span>Rebounds</span><strong>{{ "%.1f"|format(p.rebounds) }}</strong></div>
+                <div class="overview-stat"><span>Assists</span><strong>{{ "%.1f"|format(p.assists) }}</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section-grid">
+            <div class="card">
+              <h3>Technical</h3>
+              <div class="attribute-list">
+                {% for label, value in [
+                  ('Ball Handle', p.traits.ball_security),
+                  ('Pull-Up Shooting', p.traits.pullup_shooting),
+                  ('Catch & Shoot', p.traits.catch_shoot),
+                  ('Finishing', p.traits.finishing),
+                  ('Pass Accuracy', p.traits.pass_accuracy),
+                  ('Screen Setting', p.traits.screen_setting),
+                  ('Free Throw Rating', p.traits.free_throw_rating),
+                  ('Foul Drawing', p.traits.foul_drawing),
+                  ('Rebounding', p.traits.rebounding)
+                ] %}
+                  <div class="attribute-row">
+                    <label>{{ label }}</label>
+                    <strong>{{ "%.1f"|format(value) }}</strong>
+                    <div class="bar"><span style="width: {{ (value / 20.0) * 100 }}%;"></span></div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Mental</h3>
+              <div class="attribute-list">
+                {% for label, value in [
+                  ('Pass Vision', p.traits.pass_vision),
+                  ('Decision Making', p.traits.decision_making),
+                  ('Foul Discipline', p.traits.foul_discipline),
+                  ('Role Consistency', p.traits.role_consistency),
+                  ('Clutch', p.traits.clutch)
+                ] %}
+                  <div class="attribute-row">
+                    <label>{{ label }}</label>
+                    <strong>{{ "%.1f"|format(value) }}</strong>
+                    <div class="bar"><span style="width: {{ (value / 20.0) * 100 }}%;"></span></div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Physical</h3>
+              <div class="attribute-list">
+                {% for label, value in [
+                  ('Separation', p.traits.separation),
+                  ('Burst', p.traits.burst),
+                  ('Speed', p.traits.speed),
+                  ('Stamina', p.traits.stamina),
+                  ('Size', p.traits.size),
+                  ('Reach', p.traits.reach)
+                ] %}
+                  <div class="attribute-row">
+                    <label>{{ label }}</label>
+                    <strong>{{ "%.1f"|format(value) }}</strong>
+                    <div class="bar"><span style="width: {{ (value / 20.0) * 100 }}%;"></span></div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Defensive</h3>
+              <div class="attribute-list">
+                {% for label, value in [
+                  ('Containment', p.traits.containment),
+                  ('Help Defense', p.traits.help_rotation),
+                  ('Closeout', p.traits.closeout),
+                  ('Screen Navigation', p.traits.screen_nav),
+                  ('Interior Defense', p.traits.interior_def),
+                  ('Rim Protection', p.traits.rim_protect),
+                  ('Steal Pressure', p.traits.steal_pressure)
+                ] %}
+                  <div class="attribute-row">
+                    <label>{{ label }}</label>
+                    <strong>{{ "%.1f"|format(value) }}</strong>
+                    <div class="bar"><span style="width: {{ (value / 20.0) * 100 }}%;"></span></div>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          </section>
+
+          <section class="section-grid">
+            <div class="card">
+              <h3>Season Output</h3>
+              <div class="info-grid">
+                <div class="info-item"><span>FGA</span><strong>{{ "%.1f"|format(p.fga) }}</strong></div>
+                <div class="info-item"><span>3PA</span><strong>{{ "%.1f"|format(p.three_pa) }}</strong></div>
+                <div class="info-item"><span>FTA</span><strong>{{ "%.1f"|format(p.fta) }}</strong></div>
+                <div class="info-item"><span>TOV</span><strong>{{ "%.1f"|format(p.turnovers) }}</strong></div>
+                <div class="info-item"><span>PF</span><strong>{{ "%.1f"|format(p.fouls) }}</strong></div>
+                <div class="info-item"><span>OREB</span><strong>{{ "%.1f"|format(p.oreb) }}</strong></div>
+                <div class="info-item"><span>DREB</span><strong>{{ "%.1f"|format(p.dreb) }}</strong></div>
+                <div class="info-item"><span>Form Delta</span><strong>{{ "%+.1f"|format(p.recent_form_delta) }}</strong></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Condition</h3>
+              <div class="info-grid">
+                <div class="info-item"><span>Energy</span><strong>{{ "%.2f"|format(p.condition.energy) }}</strong></div>
+                <div class="info-item"><span>Fatigue</span><strong>{{ "%.2f"|format(p.condition.fatigue) }}</strong></div>
+                <div class="info-item"><span>Confidence</span><strong>{{ "%.2f"|format(p.condition.confidence) }}</strong></div>
+                <div class="info-item"><span>Available</span><strong>{% if p.condition.available %}Yes{% else %}No{% endif %}</strong></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Profile Notes</h3>
+              <div class="info-grid">
+                <div class="info-item"><span>Player Key</span><strong>{{ p.player_key }}</strong></div>
+                <div class="info-item"><span>Player ID</span><strong>{{ p.player_id }}</strong></div>
+                <div class="info-item"><span>Season FPTS Avg</span><strong>{{ "%.1f"|format(p.recent_fpts_avg) }}</strong></div>
+                <div class="info-item"><span>Weighted FPTS</span><strong>{{ "%.1f"|format(p.recent_fpts_weighted) }}</strong></div>
+              </div>
+            </div>
+          </section>
+
+          {% if selected_player_history %}
+          <section class="panel">
+            <h3 style="margin-top: 0;">Season History</h3>
+            <div class="trend-row">
+              <div class="trend-pill">
+                <span>Ball Handle</span>
+                <strong>{% for season in selected_player_history[:4] %}{{ season.season }} {{ "%.1f"|format(season.traits.ball_security) }}{% if not loop.last %} · {% endif %}{% endfor %}</strong>
+              </div>
+              <div class="trend-pill">
+                <span>Pass Vision</span>
+                <strong>{% for season in selected_player_history[:4] %}{{ season.season }} {{ "%.1f"|format(season.traits.pass_vision) }}{% if not loop.last %} · {% endif %}{% endfor %}</strong>
+              </div>
+              <div class="trend-pill">
+                <span>Pull-Up</span>
+                <strong>{% for season in selected_player_history[:4] %}{{ season.season }} {{ "%.1f"|format(season.traits.pullup_shooting) }}{% if not loop.last %} · {% endif %}{% endfor %}</strong>
+              </div>
+              <div class="trend-pill">
+                <span>Speed</span>
+                <strong>{% for season in selected_player_history[:4] %}{{ season.season }} {{ "%.1f"|format(season.traits.speed) }}{% if not loop.last %} · {% endif %}{% endfor %}</strong>
+              </div>
+            </div>
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>Season</th>
+                  <th>Team</th>
+                  <th>Role</th>
+                  <th>MPG</th>
+                  <th>PTS</th>
+                  <th>REB</th>
+                  <th>AST</th>
+                  <th>USG%</th>
+                  <th>TS%</th>
+                  <th>AST%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for season in selected_player_history %}
+                <tr>
+                  <td>{{ season.season }}</td>
+                  <td>{{ season.team_code }}</td>
+                  <td>{{ season.offensive_role }}</td>
+                  <td>{{ "%.1f"|format(season.minutes_per_game) }}</td>
+                  <td>{{ "%.1f"|format(season.points_per_game) }}</td>
+                  <td>{{ "%.1f"|format(season.rebounds_per_game) }}</td>
+                  <td>{{ "%.1f"|format(season.assists_per_game) }}</td>
+                  <td>{{ "%.1f"|format(season.usg_pct) }}</td>
+                  <td>{{ "%.3f"|format(season.ts_pct) }}</td>
+                  <td>{{ "%.1f"|format(season.ast_pct) }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </section>
+          {% endif %}
+        {% else %}
+          <section class="panel">
+            <div class="empty-state">No player selected.</div>
+          </section>
+        {% endif %}
+      </section>
+    </div>
+  </div>
+</body>
+</html>

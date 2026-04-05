@@ -293,6 +293,13 @@
         letter-spacing: 0.02em;
         text-align: center;
       }
+      .broadcast-banner .banner-subtext {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.86rem;
+        line-height: 1.35;
+        text-align: center;
+      }
       .court {
         position: relative;
         width: 100%;
@@ -313,25 +320,48 @@
         height: 100%;
         pointer-events: none;
       }
+      .zone-overlay {
+        opacity: 0.22;
+      }
+      .zone-overlay .zone-fill {
+        fill: rgba(255,255,255,0.06);
+        stroke: rgba(255,255,255,0.08);
+        stroke-width: 1.5;
+      }
       .marker, .ball {
         position: absolute;
         transform: translate(-50%, -50%);
         transition:
-          left 800ms cubic-bezier(0.22, 1, 0.36, 1),
-          top 800ms cubic-bezier(0.22, 1, 0.36, 1),
           box-shadow 250ms ease,
-          transform 250ms ease;
+          transform 250ms ease,
+          filter 200ms ease;
       }
       .marker {
         width: 38px;
         height: 38px;
         border-radius: 999px;
+        position: absolute;
         display: grid;
         place-items: center;
         font-size: 0.8rem;
         font-weight: 700;
         border: 2px solid rgba(255,255,255,0.84);
         box-shadow: 0 12px 24px rgba(0,0,0,0.20);
+        --facing-angle: 0deg;
+      }
+      .marker::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.92);
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.18);
+        transform: translate(-50%, -50%) rotate(var(--facing-angle)) translateY(-15px);
+        transition: transform 250ms ease, opacity 180ms ease;
+        opacity: 0.9;
       }
       .marker.home {
         background: #1f9d6d;
@@ -351,13 +381,117 @@
       .marker.defender-focus {
         border-style: dashed;
       }
+      .marker.mode-sprint {
+        box-shadow: 0 14px 28px rgba(0,0,0,0.24);
+      }
+      .marker.mode-jog {
+        opacity: 0.96;
+      }
+      .marker.mode-shuffle {
+        border-style: dashed;
+      }
+      .marker.mode-backpedal {
+        border-color: rgba(255,255,255,0.72);
+      }
+      .marker.mode-set {
+        opacity: 0.9;
+      }
+      .marker.mode-set::after {
+        opacity: 0.72;
+      }
+      .marker.phase-ready::after {
+        opacity: 0.68;
+      }
+      .marker.phase-load {
+        box-shadow: 0 10px 18px rgba(0,0,0,0.18);
+      }
+      .marker.phase-load::after {
+        transform: translate(-50%, -50%) rotate(var(--facing-angle)) translateY(-13px) scale(0.88);
+      }
+      .marker.phase-burst {
+        box-shadow: 0 16px 30px rgba(0,0,0,0.26);
+      }
+      .marker.phase-burst::after {
+        transform: translate(-50%, -50%) rotate(var(--facing-angle)) translateY(-17px) scale(1.05);
+      }
+      .marker.phase-recover::after {
+        opacity: 0.82;
+      }
+      .ball.mode-air {
+        filter: drop-shadow(0 12px 8px rgba(0,0,0,0.35));
+      }
+      .ball.mode-air::after {
+        content: "";
+        position: absolute;
+        inset: -2px;
+        border-radius: 999px;
+        background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.18), rgba(255,255,255,0) 70%);
+        opacity: 0.65;
+      }
+      .ball.mode-dribble {
+        filter: drop-shadow(0 3px 4px rgba(0,0,0,0.3));
+      }
+      .ball.mode-held {
+        filter: drop-shadow(0 6px 6px rgba(0,0,0,0.26));
+      }
+      .shot-marker {
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        transform: translate(-50%, -50%);
+        border: 2px solid rgba(255,255,255,0.95);
+        background: rgba(255, 209, 102, 0.94);
+        box-shadow: 0 0 0 10px rgba(255, 209, 102, 0.12);
+        pointer-events: none;
+        z-index: 6;
+        opacity: 0;
+        transition: left 400ms ease, top 400ms ease, opacity 180ms ease;
+      }
+      .shot-marker.made {
+        background: rgba(72, 199, 142, 0.95);
+        box-shadow: 0 0 0 12px rgba(72, 199, 142, 0.16);
+      }
+      .shot-marker.visible {
+        opacity: 1;
+      }
+      .shot-tag {
+        position: absolute;
+        transform: translate(-50%, -140%);
+        padding: 4px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(8, 14, 21, 0.86);
+        color: var(--ink);
+        font-size: 0.72rem;
+        font-weight: 700;
+        white-space: nowrap;
+        pointer-events: none;
+      }
       .ball {
         width: 18px;
         height: 18px;
+        position: absolute;
         border-radius: 999px;
         background: radial-gradient(circle at 35% 35%, #ffd7a1 0%, #cb6b1f 40%, #7b3f15 100%);
         box-shadow: 0 6px 14px rgba(0,0,0,0.26);
         z-index: 5;
+        --ball-trail-x: 0px;
+        --ball-trail-y: 0px;
+        --ball-trail-opacity: 0;
+      }
+      .ball::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: radial-gradient(circle at 45% 45%, rgba(255, 228, 173, 0.32) 0%, rgba(203, 107, 31, 0.14) 55%, rgba(123, 63, 21, 0) 100%);
+        transform: translate(calc(-50% + var(--ball-trail-x)), calc(-50% + var(--ball-trail-y)));
+        opacity: var(--ball-trail-opacity);
+        pointer-events: none;
       }
       .beat-strip {
         display: grid;
@@ -485,6 +619,7 @@
         </div>
         <div class="top-links">
           <a class="chip" href="/">Main Dashboard</a>
+          <a class="chip" href="/basketball-players?date={{ form.date }}">Player View</a>
           <a class="chip" href="/basketball-match-view">Reset View</a>
         </div>
       </section>
@@ -500,7 +635,7 @@
             <div class="score" id="defense-score">{{ payload.match.initial_scoreboard.defense_score }}</div>
           </div>
           <div class="center-clock">
-            <div class="period">Q{{ payload.match.initial_scoreboard.period }}</div>
+            <div class="period" id="period-label">Q{{ payload.match.initial_scoreboard.period }}</div>
             <div class="clock" id="game-clock">{{ payload.match.initial_scoreboard.clock_display }}</div>
             <div class="shot">Shot Clock <span id="shot-clock">{{ payload.match.initial_scoreboard.shot_clock }}</span></div>
           </div>
@@ -646,29 +781,60 @@
                   <svg viewBox="0 0 500 940" preserveAspectRatio="none" aria-hidden="true">
                     <rect x="0" y="0" width="500" height="940" fill="none" stroke="#7b4b1e" stroke-width="5"></rect>
                     <line x1="0" y1="470" x2="500" y2="470" stroke="#f0e6d8" stroke-width="5" stroke-dasharray="14 10" opacity="0.85"></line>
-                    <g transform="translate(0, 470) scale(1, -1)">
-                      <rect x="170" y="350" width="160" height="110" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
-                      <circle cx="250" cy="350" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
-                      <circle cx="250" cy="438" r="7" fill="#7b4b1e"></circle>
-                      <path d="M 30 385 Q 250 280 470 385" fill="none" stroke="#fff4df" stroke-width="4"></path>
-                      <line x1="30" y1="385" x2="30" y2="470" stroke="#fff4df" stroke-width="4"></line>
-                      <line x1="470" y1="385" x2="470" y2="470" stroke="#fff4df" stroke-width="4"></line>
+                    <circle cx="250" cy="470" r="60" fill="none" stroke="#f0e6d8" stroke-width="4" opacity="0.95"></circle>
+
+                    <g>
+                      <rect x="170" y="0" width="160" height="190" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
+                      <circle cx="250" cy="190" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
+                      <line x1="220" y1="40" x2="280" y2="40" stroke="#f0e6d8" stroke-width="5"></line>
+                      <circle cx="250" cy="52.5" r="7.5" fill="none" stroke="#7b4b1e" stroke-width="3"></circle>
+                      <path d="M 210 52.5 A 40 40 0 0 1 290 52.5" fill="none" stroke="#f0e6d8" stroke-width="4"></path>
+                      <line x1="30" y1="0" x2="30" y2="142" stroke="#fff4df" stroke-width="4"></line>
+                      <line x1="470" y1="0" x2="470" y2="142" stroke="#fff4df" stroke-width="4"></line>
+                      <path d="M 30 142 A 237.5 237.5 0 0 0 470 142" fill="none" stroke="#fff4df" stroke-width="4"></path>
                     </g>
-                    <g transform="translate(0, 470)">
-                      <rect x="170" y="350" width="160" height="110" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
-                      <circle cx="250" cy="350" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
-                      <circle cx="250" cy="438" r="7" fill="#7b4b1e"></circle>
-                      <path d="M 30 385 Q 250 280 470 385" fill="none" stroke="#fff4df" stroke-width="4"></path>
-                      <line x1="30" y1="385" x2="30" y2="470" stroke="#fff4df" stroke-width="4"></line>
-                      <line x1="470" y1="385" x2="470" y2="470" stroke="#fff4df" stroke-width="4"></line>
+
+                    <g>
+                      <rect x="170" y="750" width="160" height="190" fill="var(--paint)" stroke="#7b4b1e" stroke-width="4"></rect>
+                      <circle cx="250" cy="750" r="60" fill="none" stroke="#7b4b1e" stroke-width="4"></circle>
+                      <line x1="220" y1="900" x2="280" y2="900" stroke="#f0e6d8" stroke-width="5"></line>
+                      <circle cx="250" cy="887.5" r="7.5" fill="none" stroke="#7b4b1e" stroke-width="3"></circle>
+                      <path d="M 210 887.5 A 40 40 0 0 0 290 887.5" fill="none" stroke="#f0e6d8" stroke-width="4"></path>
+                      <line x1="30" y1="798" x2="30" y2="940" stroke="#fff4df" stroke-width="4"></line>
+                      <line x1="470" y1="798" x2="470" y2="940" stroke="#fff4df" stroke-width="4"></line>
+                      <path d="M 30 798 A 237.5 237.5 0 0 1 470 798" fill="none" stroke="#fff4df" stroke-width="4"></path>
+                    </g>
+                  </svg>
+                  <svg class="zone-overlay" viewBox="0 0 500 940" preserveAspectRatio="none" aria-hidden="true">
+                    <g>
+                      <circle class="zone-fill" cx="250" cy="52.5" r="40"></circle>
+                      <rect class="zone-fill" x="170" y="65" width="160" height="120" rx="10"></rect>
+                      <ellipse class="zone-fill" cx="250" cy="188" rx="92" ry="52"></ellipse>
+                      <rect class="zone-fill" x="22" y="0" width="60" height="132" rx="8"></rect>
+                      <rect class="zone-fill" x="418" y="0" width="60" height="132" rx="8"></rect>
+                    </g>
+                    <g opacity="0.25">
+                      <circle class="zone-fill" cx="250" cy="887.5" r="40"></circle>
+                      <rect class="zone-fill" x="170" y="755" width="160" height="120" rx="10"></rect>
+                      <ellipse class="zone-fill" cx="250" cy="752" rx="92" ry="52"></ellipse>
+                      <rect class="zone-fill" x="22" y="808" width="60" height="132" rx="8"></rect>
+                      <rect class="zone-fill" x="418" y="808" width="60" height="132" rx="8"></rect>
                     </g>
                   </svg>
                   <div class="ball" id="ball"></div>
+                  <div class="shot-marker" id="shot-marker">
+                    <div class="shot-tag" id="shot-tag"></div>
+                  </div>
                 </div>
               </div>
               <div class="broadcast-banner">
-                <div class="banner-text">
-                  Welcome to tonight's matchup, the {{ payload.match.away_team_name or payload.match.away_team }} versus the {{ payload.match.home_team_name or payload.match.home_team }}
+                <div>
+                  <div class="banner-text" id="broadcast-title">
+                    Welcome to tonight's matchup, the {{ payload.match.away_team_name or payload.match.away_team }} versus the {{ payload.match.home_team_name or payload.match.home_team }}
+                  </div>
+                  <div class="banner-subtext" id="broadcast-body">
+                    We are just about ready for the opening tip.
+                  </div>
                 </div>
               </div>
             </div>
@@ -738,13 +904,18 @@
         const beatType = document.getElementById("beat-type");
         const commentaryTitle = document.getElementById("commentary-title");
         const commentaryBody = document.getElementById("commentary-body");
+        const broadcastTitle = document.getElementById("broadcast-title");
+        const broadcastBody = document.getElementById("broadcast-body");
         const offenseScore = document.getElementById("offense-score");
         const defenseScore = document.getElementById("defense-score");
         const homeTeamScore = document.getElementById("home-team-score");
         const awayTeamScore = document.getElementById("away-team-score");
+        const periodLabel = document.getElementById("period-label");
         const gameClock = document.getElementById("game-clock");
         const shotClock = document.getElementById("shot-clock");
         const ball = document.getElementById("ball");
+        const shotMarker = document.getElementById("shot-marker");
+        const shotTag = document.getElementById("shot-tag");
         const playToggle = document.getElementById("play-toggle");
         const speedSelect = document.getElementById("speed-select");
         const homeStatsBody = document.getElementById("home-stats-body");
@@ -769,9 +940,9 @@
           const away = payload.match.away_team;
           const ot = offenseTeam || home;
           if (ot === away) {
-            return (y / 47) * 50;
+            return (y / 94) * 100;
           }
-          return 100 - (y / 47) * 50;
+          return 100 - (y / 94) * 100;
         }
 
         function initials(name) {
@@ -813,8 +984,10 @@
           const height = court.clientHeight || 1880;
           const scaledWidth = width * scale;
           const scaledHeight = height * scale;
-          const pointX = (pctX(ballPoint.x) / 100) * width;
-          const pointY = (pctYFull(ballPoint.y, offenseTeam) / 100) * height;
+          const trackedX = lerp(Number(track.start_x || 0), Number(track.end_x || 0), eased);
+          const trackedY = lerp(Number(track.start_y || 0), Number(track.end_y || 0), eased);
+          const pointX = ((50 + trackedX) / 100) * width;
+          const pointY = ((50 - trackedY) / 100) * height;
           const targetXPx = width * 0.5;
           const targetYPx = width > 900
             ? height * (offenseTeam === payload.match.away_team ? 0.54 : 0.46)
@@ -829,11 +1002,105 @@
         }
 
         function pointAt(track, progress) {
-          const eased = ease(track.easing, progress);
+          const delay = Math.max(0, Math.min(0.3, Number(track.delay || 0)));
+          const tempo = Math.max(0.5, Math.min(1.5, Number(track.tempo || 1)));
+          const delayed = progress <= delay ? 0 : Math.min(1, (progress - delay) / Math.max(0.001, 1 - delay));
+          const eased = Math.min(1, ease(track.easing, delayed) * tempo);
+          if (track.control) {
+            const u = 1 - eased;
+            return {
+              x: (u * u * track.start.x) + (2 * u * eased * track.control.x) + (eased * eased * track.end.x),
+              y: (u * u * track.start.y) + (2 * u * eased * track.control.y) + (eased * eased * track.end.y),
+            };
+          }
           return {
             x: lerp(track.start.x, track.end.x, eased),
             y: lerp(track.start.y, track.end.y, eased),
           };
+        }
+
+        function facingAngle(track, progress, point, ballPoint, offenseTeam, marker) {
+          const isDefense = track.team_code !== (offenseTeam || payload.match.home_team);
+          const locomotion = String(track.locomotion || "jog");
+          const nextPoint = pointAt(track, Math.min(1, progress + 0.08));
+          const moveDx = nextPoint.x - point.x;
+          const moveDyRaw = nextPoint.y - point.y;
+          const ballDx = ballPoint.x - point.x;
+          const ballDyRaw = ballPoint.y - point.y;
+          let vx = moveDx;
+          let vy = moveDyRaw;
+          if (locomotion === "backpedal" || (isDefense && locomotion === "shuffle")) {
+            vx = ballDx;
+            vy = ballDyRaw;
+          } else if (Math.abs(vx) + Math.abs(vy) < 0.18) {
+            vx = isDefense ? ballDx : moveDx || ballDx;
+            vy = isDefense ? ballDyRaw : moveDyRaw || ballDyRaw;
+          }
+          if (Math.abs(vx) + Math.abs(vy) < 0.3) {
+            return Number(marker?.dataset?.lastAngle || 0);
+          }
+          const screenVy = offenseTeam === payload.match.away_team ? vy : -vy;
+          return (Math.atan2(screenVy, vx) * 180 / Math.PI) + 90;
+        }
+
+        function locomotionPhase(track, beat, progress) {
+          const locomotion = String(track.locomotion || "jog");
+          const delayed = progress <= Number(track.delay || 0)
+            ? 0
+            : Math.min(1, (progress - Number(track.delay || 0)) / Math.max(0.001, 1 - Number(track.delay || 0)));
+          const isDefense = track.team_code !== ((beat && beat.offense_team_code) || payload.match.home_team);
+          const eventType = String((beat && beat.event_type) || "");
+          if (locomotion === "set") {
+            return "ready";
+          }
+          if (locomotion === "sprint") {
+            if (delayed < 0.18) return "load";
+            if (delayed < 0.72) return "burst";
+            return "recover";
+          }
+          if (locomotion === "shuffle") {
+            if (delayed < 0.28) return "ready";
+            if (eventType === "drive" || eventType === "pass") return delayed < 0.68 ? "burst" : "recover";
+            return "load";
+          }
+          if (locomotion === "backpedal") {
+            if (delayed < 0.34) return "ready";
+            if (delayed < 0.72) return "recover";
+            return isDefense ? "burst" : "recover";
+          }
+          if (locomotion === "jog") {
+            if (eventType === "drive" && !isDefense && delayed < 0.24) return "load";
+            if (eventType === "drive" && delayed < 0.7) return "burst";
+            return delayed < 0.2 ? "ready" : "recover";
+          }
+          return "ready";
+        }
+
+        function markerVisualState(track, progress, point, ballPoint, offenseTeam, marker) {
+          const locomotion = String(track.locomotion || "jog");
+          const delayed = progress <= Number(track.delay || 0)
+            ? 0
+            : Math.min(1, (progress - Number(track.delay || 0)) / Math.max(0.001, 1 - Number(track.delay || 0)));
+          const eased = ease(track.easing, delayed);
+          const angle = facingAngle(track, progress, point, ballPoint, offenseTeam, marker);
+          const phase = locomotionPhase(track, { offense_team_code: offenseTeam, event_type: track.event_type || "" }, progress);
+          if (locomotion === "sprint") {
+            const stretch = 1 + (Math.sin(Math.PI * eased) * 0.1);
+            return { locomotion, phase, angle, transform: `translate(-50%, -50%) scale(${1.02 + stretch * 0.04}, ${0.98 - stretch * 0.03})` };
+          }
+          if (locomotion === "shuffle") {
+            const sway = Math.sin(Math.PI * 2 * eased) * 3.5;
+            return { locomotion, phase, angle, transform: `translate(calc(-50% + ${sway}px), -50%) scale(0.98, 1.02)` };
+          }
+          if (locomotion === "backpedal") {
+            const lift = Math.sin(Math.PI * eased) * 2.5;
+            return { locomotion, phase, angle, transform: `translate(-50%, calc(-50% - ${lift}px)) scale(0.97)` };
+          }
+          if (locomotion === "set") {
+            return { locomotion, phase, angle, transform: "translate(-50%, -50%) scale(0.96)" };
+          }
+          const bob = Math.sin(Math.PI * eased) * 1.5;
+          return { locomotion, phase, angle, transform: `translate(-50%, calc(-50% - ${bob}px))` };
         }
 
         function pointOnBallTrack(track, progress) {
@@ -852,14 +1119,47 @@
           const eased = ease(track.easing, progress);
           if (track.mode === "air") {
             const lift = Math.sin(Math.PI * eased) * (track.arc_height || 0);
-            return { yOffsetPx: lift * -1.6, scale: 1 + (lift / 42), glow: 0.34 };
+            const dx = Number(track.end?.x || 0) - Number(track.start?.x || 0);
+            const dy = Number(track.end?.y || 0) - Number(track.start?.y || 0);
+            const distance = Math.hypot(dx, dy);
+            const speedFactor = Math.max(0.2, Math.min(1.0, distance / 22));
+            return {
+              yOffsetPx: lift * -1.6,
+              scaleX: 1.02 + (speedFactor * 0.18) + (lift / 90),
+              scaleY: 0.98 - (speedFactor * 0.10),
+              rotationDeg: Math.atan2(dy, dx) * 180 / Math.PI,
+              glow: 0.34 + (speedFactor * 0.08),
+              trailX: dx * -0.28,
+              trailY: dy * -0.28,
+              trailOpacity: 0.18 + (speedFactor * 0.20),
+            };
           }
           if (track.mode === "dribble") {
             const count = Math.max(1, track.dribble_count || 1);
             const bounce = Math.abs(Math.sin(Math.PI * count * eased));
-            return { yOffsetPx: bounce * 10, scale: 1 - (bounce * 0.08), glow: 0.2 };
+            const squash = 1 - (bounce * 0.12);
+            const stretch = 1 + (bounce * 0.12);
+            return {
+              yOffsetPx: bounce * 13,
+              scaleX: stretch,
+              scaleY: squash,
+              rotationDeg: Math.sin(Math.PI * count * eased) * 8,
+              glow: 0.2,
+              trailX: 0,
+              trailY: 4 + (bounce * 2),
+              trailOpacity: 0.08 + (bounce * 0.06),
+            };
           }
-          return { yOffsetPx: 0, scale: 1, glow: 0.16 };
+          return {
+            yOffsetPx: 0,
+            scaleX: 1,
+            scaleY: 1,
+            rotationDeg: 0,
+            glow: 0.16,
+            trailX: 0,
+            trailY: 0,
+            trailOpacity: 0,
+          };
         }
 
         function setMarkerState(marker, playerId, beat) {
@@ -953,16 +1253,118 @@
 
         function updateStatsUI(beatIndexValue) {
           const snapshot = statSnapshots[Math.max(0, Math.min(beatIndexValue, statSnapshots.length - 1))] || {};
+          const beat = payload.match.beats[Math.max(0, Math.min(beatIndexValue, payload.match.beats.length - 1))] || {};
+          const homeLineupIds = new Set((beat.home_lineup_ids || []).map(String));
+          const awayLineupIds = new Set((beat.away_lineup_ids || []).map(String));
           const homePlayers = payload.players
             .filter(player => player.team_code === payload.match.home_team)
+            .filter(player => homeLineupIds.size === 0 || homeLineupIds.has(String(player.player_id)))
             .map(player => ({ ...player, stats: snapshot[player.player_id] || emptyStats() }))
             .sort((a, b) => (b.stats.pts - a.stats.pts) || (b.stats.reb - a.stats.reb) || a.name.localeCompare(b.name));
           const awayPlayers = payload.players
             .filter(player => player.team_code === payload.match.away_team)
+            .filter(player => awayLineupIds.size === 0 || awayLineupIds.has(String(player.player_id)))
             .map(player => ({ ...player, stats: snapshot[player.player_id] || emptyStats() }))
             .sort((a, b) => (b.stats.pts - a.stats.pts) || (b.stats.reb - a.stats.reb) || a.name.localeCompare(b.name));
           renderStatsTable(homeStatsBody, homePlayers);
           renderStatsTable(awayStatsBody, awayPlayers);
+        }
+
+        function broadcasterCopy(beat) {
+          const awayName = payload.match.away_team_name || payload.match.away_team;
+          const homeName = payload.match.home_team_name || payload.match.home_team;
+          const offenseName = beat.offense_team_code === payload.match.away_team ? awayName : homeName;
+          const defenseName = beat.offense_team_code === payload.match.away_team ? homeName : awayName;
+          const focusName = payload.players.find(player => player.player_id === beat.focus_player_id)?.name || offenseName;
+
+          if (beat.event_type === "jump_ball_setup") {
+            return {
+              title: `${awayName} and ${homeName} are set for the tip`,
+              body: "The floor is spaced, the officials are ready, and this one is about to get underway.",
+            };
+          }
+          if (beat.event_type === "jump_ball") {
+            return {
+              title: `${offenseName} controls the opening tip`,
+              body: `${offenseName} settles in first and starts to flow into the halfcourt look.`,
+            };
+          }
+          if (beat.event_type === "possession_change") {
+            return {
+              title: `${offenseName} turns the floor around`,
+              body: beat.commentary || `${offenseName} takes over while ${defenseName} scrambles to match up.`,
+            };
+          }
+          if (beat.event_type === "possession_start") {
+            return {
+              title: `${offenseName} initiates the next trip`,
+              body: beat.commentary || `${offenseName} is organizing the action while ${defenseName} gets set behind the ball.`,
+            };
+          }
+          if (beat.event_type === "screen") {
+            return {
+              title: `${focusName} brings a screen into the action`,
+              body: `${offenseName} is trying to force a rotation here and pull ${defenseName} out of shape.`,
+            };
+          }
+          if (beat.event_type === "handoff") {
+            return {
+              title: `${focusName} flows into the handoff`,
+              body: `${offenseName} is trying to turn the corner quickly before the defense can switch or recover.`,
+            };
+          }
+          if (beat.event_type === "advance") {
+            return {
+              title: `${focusName} pushes the break`,
+              body: `${offenseName} is coming downhill early, and ${defenseName} is still trying to get organized in transition.`,
+            };
+          }
+          if (beat.event_type === "pass") {
+            return {
+              title: `${offenseName} moves it side to side`,
+              body: `${focusName} keeps the ball moving, looking to bend ${defenseName} before the next attack.`,
+            };
+          }
+          if (beat.event_type === "drive") {
+            return {
+              title: `${focusName} gets downhill`,
+              body: `${offenseName} has the paint under pressure now, and ${defenseName} has to decide whether to help or stay home.`,
+            };
+          }
+          if (beat.event_type === "shot") {
+            return {
+              title: beat.label === "Bucket" ? `${focusName} scores for ${offenseName}` : `${focusName} lets it go`,
+              body: beat.commentary || `${defenseName} contests late as the possession comes to a finish.`,
+            };
+          }
+          if (beat.event_type === "rebound") {
+            return {
+              title: `${focusName} cleans the glass`,
+              body: `${offenseName} resets if it is an extra chance, otherwise ${defenseName} is getting ready to run.`,
+            };
+          }
+          if (beat.event_type === "foul") {
+            return {
+              title: `Whistle on the play`,
+              body: `${focusName} drew contact there, and both teams get a moment to reset the floor.`,
+            };
+          }
+          if (beat.event_type === "turnover") {
+            return {
+              title: `${offenseName} gives it away`,
+              body: `${defenseName} forces the mistake and immediately looks to turn defense into offense.`,
+            };
+          }
+          if (beat.event_type === "substitution") {
+            return {
+              title: `${offenseName} goes to the bench`,
+              body: beat.commentary || `${offenseName} changes the unit and gets fresh legs onto the floor.`,
+            };
+          }
+          return {
+            title: beat.label || `${offenseName} in action`,
+            body: beat.commentary || `${offenseName} continues to probe while ${defenseName} stays connected.`,
+          };
         }
 
         function updateBeatUI(beatIndexValue) {
@@ -973,10 +1375,14 @@
           beatType.textContent = beat.event_type;
           commentaryTitle.textContent = beat.label;
           commentaryBody.textContent = beat.commentary;
+          const broadcast = broadcasterCopy(beat);
+          if (broadcastTitle) broadcastTitle.textContent = broadcast.title;
+          if (broadcastBody) broadcastBody.textContent = broadcast.body;
           offenseScore.textContent = String(beat.offense_score);
           defenseScore.textContent = String(beat.defense_score);
           if (homeTeamScore) homeTeamScore.textContent = String(beat.offense_team_code === payload.match.home_team ? beat.offense_score : beat.defense_score);
           if (awayTeamScore) awayTeamScore.textContent = String(beat.offense_team_code === payload.match.away_team ? beat.offense_score : beat.defense_score);
+          if (periodLabel) periodLabel.textContent = `Q${beat.period}`;
           gameClock.textContent = beat.clock_display;
           shotClock.textContent = String(beat.shot_clock);
           updateStatsUI(beatIndexValue);
@@ -988,6 +1394,7 @@
           const beat = payload.match.beats[segment.beat_index];
           const progress = Math.max(0, Math.min(1, rawProgress));
           currentSegment = segmentIndex;
+          const ballPoint = pointOnBallTrack(segment.ball_track, progress);
 
           for (const track of segment.actor_tracks) {
             const marker = markers.get(track.player_id);
@@ -995,15 +1402,46 @@
             const point = pointAt(track, progress);
             marker.style.left = `${pctX(point.x)}%`;
             marker.style.top = `${pctYFull(point.y, segment.offense_team_code || payload.match.home_team)}%`;
+             const visual = markerVisualState({ ...track, event_type: segment.event_type }, progress, point, ballPoint, segment.offense_team_code || payload.match.home_team, marker);
+             marker.dataset.locomotion = visual.locomotion;
+             marker.dataset.phase = visual.phase || "ready";
+             marker.dataset.lastAngle = String(visual.angle || 0);
+             marker.style.setProperty("--facing-angle", `${visual.angle || 0}deg`);
+             marker.classList.toggle("mode-sprint", visual.locomotion === "sprint");
+             marker.classList.toggle("mode-jog", visual.locomotion === "jog");
+             marker.classList.toggle("mode-shuffle", visual.locomotion === "shuffle");
+             marker.classList.toggle("mode-backpedal", visual.locomotion === "backpedal");
+             marker.classList.toggle("mode-set", visual.locomotion === "set");
+             marker.classList.toggle("phase-ready", visual.phase === "ready");
+             marker.classList.toggle("phase-load", visual.phase === "load");
+             marker.classList.toggle("phase-burst", visual.phase === "burst");
+             marker.classList.toggle("phase-recover", visual.phase === "recover");
+             marker.style.transform = visual.transform;
             setMarkerState(marker, track.player_id, beat);
           }
 
-          const ballPoint = pointOnBallTrack(segment.ball_track, progress);
           ball.style.left = `${pctX(ballPoint.x)}%`;
           ball.style.top = `${pctYFull(ballPoint.y, segment.offense_team_code || payload.match.home_team)}%`;
+          ball.classList.toggle("mode-air", segment.ball_track.mode === "air");
+          ball.classList.toggle("mode-dribble", segment.ball_track.mode === "dribble");
+          ball.classList.toggle("mode-held", segment.ball_track.mode === "held");
           const ballFx = ballVisualState(segment.ball_track, progress);
-          ball.style.transform = `translate(-50%, calc(-50% + ${ballFx.yOffsetPx}px)) scale(${ballFx.scale})`;
+          ball.style.setProperty("--ball-trail-x", `${ballFx.trailX || 0}px`);
+          ball.style.setProperty("--ball-trail-y", `${ballFx.trailY || 0}px`);
+          ball.style.setProperty("--ball-trail-opacity", String(ballFx.trailOpacity || 0));
+          ball.style.transform = `translate(-50%, calc(-50% + ${ballFx.yOffsetPx}px)) rotate(${ballFx.rotationDeg || 0}deg) scale(${ballFx.scaleX || 1}, ${ballFx.scaleY || 1})`;
           ball.style.boxShadow = `0 6px 14px rgba(0,0,0,0.26), 0 0 0 ${ballFx.glow}rem rgba(255, 209, 102, 0.22)`;
+          const shotLoc = beat.location;
+          if (shotMarker && beat.event_type === "shot" && shotLoc && shotLoc.x != null && shotLoc.y != null) {
+            shotMarker.classList.add("visible");
+            shotMarker.classList.toggle("made", beat.label === "Bucket");
+            shotMarker.style.left = `${pctX(shotLoc.x)}%`;
+            shotMarker.style.top = `${pctYFull(shotLoc.y, segment.offense_team_code || payload.match.home_team)}%`;
+            const tag = [beat.shot_zone_label, beat.shot_distance_feet ? `${Math.round(beat.shot_distance_feet)} ft` : null].filter(Boolean).join(" · ");
+            if (shotTag) shotTag.textContent = tag || (beat.label || "shot");
+          } else if (shotMarker) {
+            shotMarker.classList.remove("visible", "made");
+          }
           camera.style.transform = cameraTransform(segment.camera_track, progress, ballPoint, segment.offense_team_code || payload.match.home_team);
           updateBeatUI(segment.beat_index);
         }

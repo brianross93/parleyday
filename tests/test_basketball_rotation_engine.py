@@ -40,7 +40,7 @@ def test_update_stint_minutes_resets_subbed_out_players() -> None:
     assert updated["e"] == 0.0
 
 
-def test_select_lineup_benches_five_foul_player_when_alternatives_exist() -> None:
+def test_select_lineup_keeps_five_foul_player_available_when_alternatives_exist() -> None:
     rotation = RotationPlan(
         starters=("a", "b", "c", "d", "e"),
         closing_group=("a", "b", "c", "d", "e"),
@@ -55,5 +55,42 @@ def test_select_lineup_benches_five_foul_player_when_alternatives_exist() -> Non
         game_seconds_remaining=18.0 * 60.0,
         foul_counts={"a": 5},
     )
+    assert len(lineup) == 5
+    assert "a" in lineup
+
+
+def test_select_lineup_removes_six_foul_player_when_alternatives_exist() -> None:
+    rotation = RotationPlan(
+        starters=("a", "b", "c", "d", "e"),
+        closing_group=("a", "b", "c", "d", "e"),
+        target_minutes={key: 30.0 for key in ("a", "b", "c", "d", "e", "f")},
+        max_stint_minutes={key: 8.0 for key in ("a", "b", "c", "d", "e", "f")},
+    )
+    lineup = select_lineup(
+        rotation,
+        minutes_played={key: 20.0 for key in ("a", "b", "c", "d", "e", "f")},
+        current_lineup=("a", "b", "c", "d", "e"),
+        stint_minutes={key: 2.0 for key in ("a", "b", "c", "d", "e")},
+        game_seconds_remaining=18.0 * 60.0,
+        foul_counts={"a": 6},
+    )
     assert "a" not in lineup
     assert "f" in lineup
+
+
+def test_select_lineup_never_readds_fouled_out_player_in_fallback() -> None:
+    rotation = RotationPlan(
+        starters=("a", "b", "c", "d", "e"),
+        closing_group=("a", "b", "c", "d", "e"),
+        target_minutes={key: 30.0 for key in ("a", "b", "c", "d", "e")},
+        max_stint_minutes={key: 8.0 for key in ("a", "b", "c", "d", "e")},
+    )
+    lineup = select_lineup(
+        rotation,
+        minutes_played={key: 20.0 for key in ("a", "b", "c", "d", "e")},
+        current_lineup=("a", "b", "c", "d", "e"),
+        stint_minutes={key: 2.0 for key in ("a", "b", "c", "d", "e")},
+        game_seconds_remaining=18.0 * 60.0,
+        foul_counts={"a": 6},
+    )
+    assert "a" not in lineup

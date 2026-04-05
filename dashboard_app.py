@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Flask, render_template, request
 
 from basketball_viewer import build_possession_view_payload, default_viewer_form
+from basketball_db import list_nba_player_profiles, list_nba_player_season_history
 from data_pipeline import DEFAULT_DB_PATH
 from dfs_results import save_dfs_build
 from dfs_strategy import build_mlb_contest_lineups, build_nba_contest_lineups
@@ -452,6 +453,54 @@ def basketball_viewer():
         error = str(exc)
 
     return render_template("basketball_viewer.html", form=form, payload=payload, error=error)
+
+
+@app.route("/basketball-players", methods=["GET"])
+def basketball_players():
+    as_of_date = (request.args.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    team_code = (request.args.get("team") or "").strip().upper()
+    search = (request.args.get("search") or "").strip()
+    selected_player_key = (request.args.get("player") or "").strip()
+    error = None
+    players: list[dict] = []
+    try:
+        players = list_nba_player_profiles(
+            as_of_date,
+            db_path=os.getenv("PARLEYDAY_DB_PATH", DEFAULT_DB_PATH),
+            team_code=team_code or None,
+            search=search or None,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        error = str(exc)
+
+    teams = sorted({str(player.get("team_code") or "") for player in players if player.get("team_code")})
+    selected_player = None
+    selected_player_history: list[dict] = []
+    if players:
+        selected_player = next(
+            (player for player in players if str(player.get("player_key") or "") == selected_player_key),
+            players[0],
+        )
+        if selected_player:
+            selected_player_history = list_nba_player_season_history(
+                db_path=os.getenv("PARLEYDAY_DB_PATH", DEFAULT_DB_PATH),
+                player_id=str(selected_player.get("player_id") or ""),
+                name_key=str(selected_player.get("name_key") or ""),
+                limit=8,
+            )
+    return render_template(
+        "basketball_players.html",
+        as_of_date=as_of_date,
+        team_code=team_code,
+        search=search,
+        selected_player_key=selected_player_key,
+        selected_player=selected_player,
+        selected_player_history=selected_player_history,
+        teams=teams,
+        players=players,
+        error=error,
+    )
 
 
 @app.route("/dfs", methods=["GET", "POST"])

@@ -22,9 +22,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    url = f"http://{args.host}:{args.port}/basketball-match-view"
+    base = f"http://{args.host}:{args.port}"
+    url = f"{base}/basketball-match-view"
     print(f"Starting basketball match view at {url}")
-    print("Main dashboard remains available at " f"http://{args.host}:{args.port}/")
+    print(f"Main parlay dashboard: {base}/")
+    print(f"DraftKings DFS lineup view: {base}/dfs")
 
     if not args.no_browser:
         threading.Thread(target=_open_browser, args=(url,), daemon=True).start()

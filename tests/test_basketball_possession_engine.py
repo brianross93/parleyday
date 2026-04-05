@@ -2,7 +2,7 @@ import random
 from collections import Counter
 from dataclasses import replace
 
-from basketball_possession_engine import _best_shooter, _get_player, _pick_closeout_defender, _primary_creator_id, _resolve_kickout_action, simulate_possession
+from basketball_possession_engine import _best_shooter, _get_player, _pick_closeout_defender, _primary_creator_id, _resolve_kickout_action, resolve_catch_and_shoot, simulate_possession
 from basketball_sim_schema import (
     BasketballSide,
     CourtPoint,
@@ -26,6 +26,7 @@ from basketball_sim_schema import (
     PossessionContext,
     PossessionPhase,
     ScoreState,
+    ShotType,
     TeamTactics,
 )
 
@@ -64,7 +65,7 @@ def _player(
             pass_accuracy=pass_accuracy,
             decision_making=decision_making,
             screen_setting=screen_setting,
-            oreb=9.0,
+            rebounding=9.5,
             free_throw_rating=12.0,
             ft_pct_raw=0.78,
             foul_drawing=11.0,
@@ -74,7 +75,6 @@ def _player(
             interior_def=9.0,
             rim_protect=8.0,
             steal_pressure=11.0,
-            dreb=10.0,
             foul_discipline=11.0,
             help_rotation=10.0,
             stamina=12.0,
@@ -352,9 +352,32 @@ def test_shot_based_possessions_emit_single_shot_event() -> None:
         shot_events = [event for event in outcome.events if event.event_type.name == "SHOT"]
         if shot_events:
             assert len(shot_events) == 1
+            assert shot_events[0].shot_distance_feet is not None
+            assert shot_events[0].shot_zone_label
             break
     else:
         raise AssertionError("Expected at least one shot possession in sample")
+
+
+def test_catch_and_shoot_uses_corner_origin_for_corner_three() -> None:
+    context = _context(PlayFamily.HANDOFF, DefensiveCoverage.ICE)
+    shooter = _get_player(context, "shooter")
+    defender = _get_player(context, "d2")
+    result = resolve_catch_and_shoot(
+        context,
+        shooter,
+        defender,
+        0.64,
+        random.Random(13),
+        origin_point=CourtPoint(-21.9, 6.5, CourtZone.LEFT_CORNER),
+        preferred_side="left",
+        defender_point=CourtPoint(-20.4, 8.3, CourtZone.LEFT_CORNER),
+        template="corner_catch",
+    )
+    shot_event = result["events"][0]
+    assert shot_event.shot_type == ShotType.CORNER_THREE
+    assert shot_event.shot_zone_label == "corner_three"
+    assert shot_event.location.x < 0
 
 
 def test_foul_outcome_points_stay_within_two_free_throws() -> None:
